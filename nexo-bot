@@ -12,6 +12,7 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 BOT_DIR="$(dirname "$SCRIPT_PATH")"
 ENV_FILE="$BOT_DIR/.env"
 COMPOSE_FILE="$BOT_DIR/docker-compose.yml"
+export COMPOSE_PROJECT_NAME="onebot"
 
 # ── Colors ───────────────────────────────────────────────────
 RED='\033[0;31m';    GREEN='\033[0;32m';  YELLOW='\033[1;33m'
@@ -25,9 +26,9 @@ _use_postgres() {
 
 _dc() {
   if _use_postgres; then
-    docker compose -f "$COMPOSE_FILE" --profile postgres "$@"
+    docker compose -p onebot -f "$COMPOSE_FILE" --profile postgres "$@"
   else
-    docker compose -f "$COMPOSE_FILE" "$@"
+    docker compose -p onebot -f "$COMPOSE_FILE" "$@"
   fi
 }
 
