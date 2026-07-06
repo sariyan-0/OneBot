@@ -828,6 +828,7 @@ async def menu_profile(message: Message) -> None:
     kb.button(text="🔙 بازگشت", callback_data="back_main")
     kb.adjust(2, 1)
 
+    balance_toman_line = f"  • <b>{balance_toman:,} تومان</b>\n" if balance_toman else ""
     text = (
         f"👤 <b>پروفایل شما</b>\n\n"
         f"🆔 آی‌دی: <code>{tg_user.id}</code>\n"
@@ -835,7 +836,7 @@ async def menu_profile(message: Message) -> None:
         f"📝 نام کاربری: @{username}\n"
         f"💼 موجودی کیف پول:\n"
         f"  • <b>${balance:.2f}</b>\n"
-        f"{f'  • <b>{balance_toman:,} تومان</b>\n' if balance_toman else ''}"
+        f"{balance_toman_line}"
         f"📦 اشتراک‌های فعال: {len(subs)}\n"
         f"📅 تاریخ ثبت‌نام: {db_user.created_at.strftime('%Y-%m-%d')}"
     )
