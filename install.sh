@@ -43,7 +43,20 @@ _info()   { echo -e "   ${CYAN}ℹ${RESET}  $*"; }
 _line()   { echo -e "${DIM}────────────────────────────────────────────────────${RESET}"; }
 _ask()    { read -rp "$(echo -e "   ${BOLD}?${RESET}  $1: ")" "$2"; }
 _ask_s()  { read -rsp "$(echo -e "   ${BOLD}?${RESET}  $1: ")" "$2"; echo ""; }
-_rand_secret() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c "${1:-24}"; }
+_rand_secret() {
+  local len="${1:-24}"
+  local secret=""
+
+  if command -v openssl &>/dev/null; then
+    secret="$(openssl rand -base64 "$((len * 2))" 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c "$len" || true)"
+  fi
+
+  if [[ -z "$secret" ]]; then
+    secret="$(set +o pipefail; tr -dc 'A-Za-z0-9' </dev/urandom | head -c "$len" 2>/dev/null || true)"
+  fi
+
+  printf '%s' "$secret"
+}
 
 # ── Root check ───────────────────────────────────────────────
 [[ $EUID -ne 0 ]] && { _err "Run as root: sudo bash install.sh"; exit 1; }
