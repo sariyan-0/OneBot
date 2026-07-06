@@ -87,6 +87,49 @@ _retry() {
   done
 }
 
+_wait_for_apt() {
+  local timeout="${1:-300}"
+  local waited=0
+  local lock_paths=(
+    /var/lib/dpkg/lock-frontend
+    /var/lib/dpkg/lock
+    /var/lib/apt/lists/lock
+    /var/cache/apt/archives/lock
+  )
+
+  _info "Waiting for apt/dpkg to become free..."
+  while true; do
+    local busy=false
+    if pgrep -x apt >/dev/null 2>&1 || \
+       pgrep -x apt-get >/dev/null 2>&1 || \
+       pgrep -x dpkg >/dev/null 2>&1 || \
+       pgrep -x unattended-upgrade >/dev/null 2>&1 || \
+       pgrep -x unattended-upgrades >/dev/null 2>&1; then
+      busy=true
+    fi
+
+    for lock in "${lock_paths[@]}"; do
+      if [[ -e "$lock" ]] && fuser "$lock" >/dev/null 2>&1; then
+        busy=true
+        break
+      fi
+    done
+
+    if [[ "$busy" == "false" ]]; then
+      return 0
+    fi
+
+    if (( waited >= timeout )); then
+      _warn "apt is still busy after ${timeout}s."
+      _warn "Please wait for the current package operation to finish, then rerun the installer."
+      return 1
+    fi
+
+    sleep 5
+    waited=$((waited + 5))
+  done
+}
+
 # ── DNS Fallback ──────────────────────────────────────────────
 # اگه یه دامنه resolve نشه، DNS سرورهای مختلف رو به resolv.conf اضافه می‌کنه
 # و دوباره تست می‌کنه. این کار فقط یه بار انجام می‌شه.
@@ -164,21 +207,10 @@ _install_docker_apt() {
   _ensure_dns "download.docker.com"
 
   # رفع apt lock در صورت وجود
-  _info "Waiting for apt lock..."
-  local lock_wait=0
-  while fuser /var/lib/dpkg/lock-frontend &>/dev/null 2>&1; do
-    sleep 2
-    (( lock_wait += 2 ))
-    if (( lock_wait >= 60 )); then
-      _warn "apt lock held for 60s — forcing release..."
-      rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock
-      dpkg --configure -a 2>/dev/null || true
-      break
-    fi
-  done
+  _wait_for_apt 300 || return 1
 
-  _retry 3 5 apt-get update -qq
-  _retry 3 5 apt-get install -y -qq ca-certificates curl gnupg lsb-release
+  _retry 3 5 apt-get -o Dpkg::Lock::Timeout=120 update -qq
+  _retry 3 5 apt-get -o Dpkg::Lock::Timeout=120 install -y -qq ca-certificates curl gnupg lsb-release
 
   install -m 0755 -d /etc/apt/keyrings
 
@@ -211,8 +243,9 @@ _install_docker_apt() {
 https://download.docker.com/linux/${distro} ${codename} stable" \
     > /etc/apt/sources.list.d/docker.list
 
-  _retry 3 5 apt-get update -qq
-  _retry 3 10 apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  _wait_for_apt 300 || return 1
+  _retry 3 5 apt-get -o Dpkg::Lock::Timeout=120 update -qq
+  _retry 3 10 apt-get -o Dpkg::Lock::Timeout=120 install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
 }
 
 # ── Docker install: RHEL/CentOS/Alma/Rocky ───────────────────
