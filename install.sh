@@ -627,11 +627,11 @@ echo ""
 # ── Bot Token ────────────────────────────────────────────────
 echo -e "   ${BOLD}Telegram Bot Token${RESET}"
 echo -e "   ${DIM}Get from @BotFather → /newbot${RESET}"
+echo -e "   ${DIM}If you leave this blank, the web panel will still run in panel-only mode.${RESET}"
 _ask_s "BOT_TOKEN" BOT_TOKEN
-while [[ -z "$BOT_TOKEN" ]]; do
-  _warn "Bot token cannot be empty."
-  _ask_s "BOT_TOKEN" BOT_TOKEN
-done
+if [[ -z "$BOT_TOKEN" ]]; then
+  _warn "No bot token entered. Telegram polling will be disabled, but the web panel will still start."
+fi
 
 # ── Admin IDs ────────────────────────────────────────────────
 echo -e "\n   ${BOLD}Your Telegram ID (numeric)${RESET}"

@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     )
 
     # ===== ربات تلگرام =====
-    bot_token: str = Field(..., description="توکن ربات از BotFather")
+    bot_token: str = Field(default="", description="توکن ربات از BotFather")
 
     # ===== رمز ورود ادمین =====
     # کاربر این رمز را به ربات می‌فرستد تا وارد حالت ادمین شود

@@ -225,13 +225,20 @@ async def main() -> None:
         logger.info(f"startup cleanup: {stale_count} تراکنش کریپتوی منقضی‌شده پاک‌سازی شد.")
 
     # ── ساخت Bot ─────────────────────────────
-    bot = ActivityLoggingBot(
-        token=settings.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
+    bot = None
+    if settings.bot_token.strip():
+        bot = ActivityLoggingBot(
+            token=settings.bot_token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+    else:
+        logger.warning(
+            "BOT_TOKEN تنظیم نشده است — فقط پنل وب و webhook server اجرا می‌شوند."
+        )
 
-    # ── هشدار startup به ادمین‌ها ────────────
-    await _notify_admins_startup(bot)
+    if bot is not None:
+        # ── هشدار startup به ادمین‌ها ────────────
+        await _notify_admins_startup(bot)
 
     # ── ساخت Dispatcher ──────────────────────
     dp = Dispatcher(storage=MemoryStorage())
@@ -266,9 +273,11 @@ async def main() -> None:
     dp.include_router(user_router)         # هندلرهای عمومی — آخر
 
     # ── Scheduler ────────────────────────────
-    scheduler = setup_scheduler(bot)
-    scheduler.start()
-    logger.success(f"Scheduler راه‌اندازی شد — {len(scheduler.get_jobs())} job فعال")
+    scheduler = None
+    if bot is not None:
+        scheduler = setup_scheduler(bot)
+        scheduler.start()
+        logger.success(f"Scheduler راه‌اندازی شد — {len(scheduler.get_jobs())} job فعال")
 
     # ── Webhook Server (NOWPayments IPN) ─────
     # اگر IPN URL تنظیم شده یا WEBHOOK_PORT وجود دارد، server شروع می‌شود
@@ -280,6 +289,15 @@ async def main() -> None:
             logger.warning(f"Webhook server راه‌اندازی نشد: {e} — پرداخت polling دستی کار می‌کند")
 
     # ── شروع polling ─────────────────────────
+    if bot is None:
+        logger.info("پنل وب فعال است. برای فعال شدن polling، BOT_TOKEN را در .env تنظیم کنید.")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            if webhook_runner:
+                await webhook_runner.cleanup()
+        return
+
     logger.info("شروع دریافت پیام‌ها (polling)...")
     try:
         await dp.start_polling(
@@ -288,7 +306,8 @@ async def main() -> None:
             drop_pending_updates=True,
         )
     finally:
-        scheduler.shutdown(wait=False)
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
         if webhook_runner:
             await webhook_runner.cleanup()
         await bot.session.close()
