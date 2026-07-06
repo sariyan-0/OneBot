@@ -94,12 +94,13 @@ async def _wallet_purchase_by_callback(
     except Exception:
         rate = 0
     toman = int(amount * rate) if rate > 0 else 0
+    toman_line = f"  • <b>{toman:,} تومان</b>\n" if toman else ""
     await callback.message.answer(
         "💼 <b>پرداخت از کیف پول</b>\n"
         "━━━━━━━━━━━━━━━\n"
         f"💰 مبلغ:\n"
         f"  • <b>${amount:.2f}</b>\n"
-        f"{f'  • <b>{toman:,} تومان</b>\n' if toman else ''}"
+        f"{toman_line}"
         "با تأیید، مبلغ از کیف پول شما کسر می‌شود و سفارش ثبت می‌شود.",
         parse_mode="HTML",
         reply_markup=kb.as_markup(),
