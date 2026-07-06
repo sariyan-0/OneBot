@@ -565,6 +565,15 @@ fi
 
 cd "$INSTALL_DIR"
 
+# Install the management command as soon as the files are in place so an
+# interrupted install still leaves a usable recovery entrypoint.
+if [[ -f "$INSTALL_DIR/onebot" ]]; then
+  chmod +x "$INSTALL_DIR/onebot" "$INSTALL_DIR/ONEBOT" "$INSTALL_DIR/nexo-bot" 2>/dev/null || true
+  ln -sf "$INSTALL_DIR/onebot" /usr/local/bin/onebot
+  ln -sf "$INSTALL_DIR/onebot" /usr/local/bin/ONEBOT
+  ln -sf "$INSTALL_DIR/nexo-bot" /usr/local/bin/nexo-bot
+fi
+
 # ════════════════════════════════════════════════════════════
 #  STEP 3.5 — Cleanup old conflicting containers/resources
 # ════════════════════════════════════════════════════════════
