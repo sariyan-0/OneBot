@@ -676,10 +676,21 @@ _menu_update() {
   _line
   if [[ -d "$BOT_DIR/.git" ]]; then
     _info "Pulling latest changes from git..."
-    git -C "$BOT_DIR" pull --rebase
+    local _stashed=false
+    if [[ -n "$(git -C "$BOT_DIR" status --porcelain 2>/dev/null || true)" ]]; then
+      _warn "Local changes detected. Stashing them before update..."
+      git -C "$BOT_DIR" stash push --include-untracked -m "onebot-auto-stash-$(date +%Y%m%d_%H%M%S)" >/dev/null 2>&1 || true
+      _stashed=true
+    fi
+
+    git -C "$BOT_DIR" pull --rebase --autostash
     _info "Rebuilding bot image..."
     _dc build --no-cache bot
     _dc up -d --force-recreate bot
+    if [[ "$_stashed" == "true" ]]; then
+      _info "Restoring local changes..."
+      git -C "$BOT_DIR" stash pop >/dev/null 2>&1 || _warn "Could not fully restore stashed changes. Check git status."
+    fi
     _ok "Update complete."
   else
     _warn "This install is not a git clone, so auto-update is unavailable."
