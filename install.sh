@@ -18,6 +18,9 @@
 
 set -euo pipefail
 
+# Public repository used for streamed installs and updates
+REPO_URL="https://github.com/sariyan-0/OneBot.git"
+
 # ── Colors ───────────────────────────────────────────────────
 RED='\033[0;31m';  GREEN='\033[0;32m';  YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m';      DIM='\033[2m'; RESET='\033[0m'
@@ -300,7 +303,8 @@ _install_compose_plugin() {
   _warn "docker compose (v2) not found. Installing compose plugin..."
   case "$PKG_MANAGER" in
     apt)
-      _retry 3 5 apt-get install -y -qq docker-compose-plugin
+      _wait_for_apt 300 || return 1
+      _retry 3 5 apt-get -o Dpkg::Lock::Timeout=120 install -y -qq docker-compose-plugin
       ;;
     dnf)
       _retry 3 5 dnf install -y docker-compose-plugin
@@ -330,7 +334,8 @@ _install_certbot_nginx() {
   _info "Installing certbot/nginx for automatic HTTPS..."
   case "$PKG_MANAGER" in
     apt)
-      _retry 3 5 apt-get install -y -qq certbot nginx ;;
+      _wait_for_apt 300 || return 1
+      _retry 3 5 apt-get -o Dpkg::Lock::Timeout=120 install -y -qq certbot nginx ;;
     dnf)
       _retry 3 5 dnf install -y certbot nginx ;;
     yum)
@@ -435,6 +440,8 @@ _install_base_utils() {
   command -v openssl &>/dev/null || { pkgs_apt+=(openssl); pkgs_rpm+=(openssl); }
   # curl — برای health check و IP detection
   command -v curl    &>/dev/null || { pkgs_apt+=(curl);    pkgs_rpm+=(curl); }
+  # git — برای clone در حالت streamed install و update flow
+  command -v git     &>/dev/null || { pkgs_apt+=(git);     pkgs_rpm+=(git); }
   # getent — معمولاً هست، ولی بعضی minimal imageها ندارند
   command -v getent  &>/dev/null || { pkgs_apt+=(libc-bin); pkgs_rpm+=(glibc-common); }
 
@@ -445,7 +452,8 @@ _install_base_utils() {
 
   case "$PKG_MANAGER" in
     apt)
-      _retry 3 5 apt-get install -y -qq "${pkgs_apt[@]}" ;;
+      _wait_for_apt 300 || return 1
+      _retry 3 5 apt-get -o Dpkg::Lock::Timeout=120 install -y -qq "${pkgs_apt[@]}" ;;
     dnf)
       _retry 3 5 dnf install -y "${pkgs_rpm[@]}" ;;
     yum)
@@ -536,8 +544,20 @@ _step "Copying bot files..."
 _real_install="$(realpath "$INSTALL_DIR" 2>/dev/null || echo "$INSTALL_DIR")"
 _real_script="$(realpath "$SCRIPT_DIR"   2>/dev/null || echo "$SCRIPT_DIR")"
 
-if [[ "$_real_script" != "$_real_install" ]]; then
-  cp -r "$SCRIPT_DIR"/. "$INSTALL_DIR/"
+_streamed_install=false
+if [[ "$SCRIPT_DIR" == /proc/* || "$SCRIPT_DIR" == /dev/fd/* || ! -f "$SCRIPT_DIR/main.py" || ! -f "$SCRIPT_DIR/README.md" ]]; then
+  _streamed_install=true
+fi
+
+if [[ "$_streamed_install" == "true" ]]; then
+  _info "Installer launched from a streamed source; cloning repository snapshot..."
+  _tmp_clone_dir="$(mktemp -d -t onebot-clone-XXXXXX)"
+  trap 'rm -rf "$_tmp_clone_dir"' EXIT
+  git clone --depth 1 "$REPO_URL" "$_tmp_clone_dir"
+  cp -a "$_tmp_clone_dir"/. "$INSTALL_DIR/"
+  _ok "Repository cloned to $INSTALL_DIR"
+elif [[ "$_real_script" != "$_real_install" ]]; then
+  cp -a "$SCRIPT_DIR"/. "$INSTALL_DIR/"
   _ok "Files copied to $INSTALL_DIR"
 else
   _ok "Files already in $INSTALL_DIR"
