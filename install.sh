@@ -983,8 +983,17 @@ fi
 # ════════════════════════════════════════════════════════════
 _step "Installing onebot command..."
 
-chmod +x "$INSTALL_DIR/onebot" "$INSTALL_DIR/ONEBOT"
-chmod +x "$INSTALL_DIR/nexo-bot"
+if [[ -f "$INSTALL_DIR/onebot" ]]; then
+  chmod +x "$INSTALL_DIR/onebot"
+fi
+if [[ -e "$INSTALL_DIR/ONEBOT" ]]; then
+  chmod +x "$INSTALL_DIR/ONEBOT" 2>/dev/null || true
+elif [[ -e "$INSTALL_DIR/onebot" ]]; then
+  ln -sf "$INSTALL_DIR/onebot" "$INSTALL_DIR/ONEBOT"
+fi
+if [[ -f "$INSTALL_DIR/nexo-bot" ]]; then
+  chmod +x "$INSTALL_DIR/nexo-bot"
+fi
 # ذخیره متغیر USE_POSTGRES برای onebot
 echo "USE_POSTGRES=${USE_POSTGRES}" >> "$INSTALL_DIR/.env"
 
