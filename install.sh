@@ -362,6 +362,13 @@ _install_certbot_nginx() {
   if command -v systemctl &>/dev/null; then
     systemctl enable nginx --now 2>/dev/null || true
   fi
+
+  # Ubuntu/Debian default site can steal port 80/443 and break the OneBot vhost.
+  if [[ -e /etc/nginx/sites-enabled/default ]]; then
+    _warn "Disabling nginx default site to avoid port conflicts..."
+    rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default 2>/dev/null || true
+  fi
+
   _ok "certbot/nginx ready."
 }
 
