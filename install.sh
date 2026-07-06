@@ -398,12 +398,14 @@ server {
     location /health {
         proxy_pass http://127.0.0.1:${wh_port}/health;
     }
-    location / { return 404; }
+    location / {
+        return 302 /admin/login;
+    }
 }
 NGINXCONF
   nginx -t >/dev/null 2>&1 || return 1
   systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || true
-  _ok "nginx reverse proxy configured for https://${domain}/webhook/"
+  _ok "nginx reverse proxy configured for https://${domain}/admin and /webhook/"
 }
 
 _obtain_ssl_certificate() {
