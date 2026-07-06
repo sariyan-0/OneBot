@@ -2743,6 +2743,7 @@ def setup_web_admin(app: web.Application) -> None:
     if not settings.web_admin_enabled:
         return
     app.router.add_get("/", lambda request: web.HTTPFound("/admin/login"))
+    app.router.add_get("/favicon.ico", lambda request: web.Response(status=204))
     app.router.add_get("/admin/login", login_get)
     app.router.add_post("/admin/login", login_post)
     app.router.add_get("/admin/logout", logout)

@@ -398,6 +398,9 @@ server {
     location /health {
         proxy_pass http://127.0.0.1:${wh_port}/health;
     }
+    location = /favicon.ico {
+        return 204;
+    }
     location / {
         return 302 /admin/login;
     }
