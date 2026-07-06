@@ -1,0 +1,79 @@
+ONEBOT Attribution License (OAL) v1.0
+Copyright (c) 2025-present github.com/sariyan-0
+
+===============================================================================
+PERMISSION
+===============================================================================
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to use,
+copy, modify, merge, publish, distribute, and sublicense the Software, subject
+to the following conditions:
+
+===============================================================================
+CONDITIONS
+===============================================================================
+
+1. ATTRIBUTION REQUIRED
+   All copies, distributions, forks, or derivative works of the Software —
+   whether modified or unmodified, public or private, commercial or
+   non-commercial — MUST retain the following attribution, clearly visible
+   in at least ONE of the following locations:
+
+     a) The README or documentation of the project
+     b) The "About" section or help command of any bot/application
+     c) A comment in the main source file(s)
+
+   Required attribution text:
+     "Based on ONEBOT by github.com/sariyan-0
+      https://github.com/sariyan-0"
+
+   You may NOT remove, obscure, or misrepresent the original authorship.
+
+2. NO MISREPRESENTATION
+   You may NOT claim original authorship of this Software or present it as
+   your own original work without clearly crediting github.com/sariyan-0 as
+   the original author.
+
+3. PRESERVATION OF LICENSE
+   Any distribution or derivative work must include this license file
+   (LICENSE) in full, without modification.
+
+===============================================================================
+DISCLAIMER OF WARRANTIES
+===============================================================================
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+THE AUTHORS OR COPYRIGHT HOLDERS SHALL NOT BE HELD LIABLE FOR ANY CLAIM,
+DAMAGES, OR OTHER LIABILITY — WHETHER IN AN ACTION OF CONTRACT, TORT, OR
+OTHERWISE — ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE
+USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+This includes but is not limited to:
+  - Financial losses resulting from payment processing errors or gateway issues
+  - Data loss, corruption, or unauthorized access
+  - Service interruptions or downtime
+  - Legal or regulatory issues arising from the use of this software
+  - Any harm caused to end-users of deployments based on this software
+
+THE USER ASSUMES FULL RESPONSIBILITY for configuring, deploying, and operating
+this software. It is provided without any guarantees of fitness for any
+particular purpose.
+
+===============================================================================
+SUMMARY (non-binding)
+===============================================================================
+
+  ✔  Free to use personally or commercially
+  ✔  Free to modify and distribute
+  ✔  Free to build products on top of it
+  ✘  Cannot remove attribution to github.com/sariyan-0
+  ✘  Cannot claim original authorship
+  ✘  Authors accept no liability for any damages
+
+===============================================================================
+
+github.com/sariyan-0 — https://github.com/sariyan-0

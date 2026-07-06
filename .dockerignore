@@ -1,0 +1,31 @@
+# فایل‌هایی که نباید داخل Docker image کپی شوند
+
+# مهم‌ترین: .env نباید داخل image باشد
+# مقادیر از docker-compose env_file خوانده می‌شوند
+.env
+.env.*
+!.env.example
+
+# دیتابیس محلی
+*.db
+*.sqlite
+
+# لاگ‌ها
+logs/
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Git
+.git/
+.gitignore
+
+# ابزارهای توسعه
+.vscode/
+.idea/
+*.swp

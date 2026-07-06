@@ -1,0 +1,54 @@
+# ======================================================
+#  Nexora VPN Bot — .gitignore
+# ======================================================
+
+# ── اطلاعات حساس — هرگز commit نکنید ─────────────────
+.env
+*.env
+!.env.example
+
+# ── دیتابیس ───────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+bot_data.db
+
+# ── لاگ‌ها ────────────────────────────────────────────
+logs/
+*.log
+
+# ── Python cache ──────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# ── Virtual environment ───────────────────────────────
+venv/
+.venv/
+env/
+.env.local
+
+# ── Docker ────────────────────────────────────────────
+# (docker-compose.yml خودش کامیت میشه — فقط override را نادیده بگیر)
+docker-compose.override.yml
+
+# ── OS files ──────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Backup files ──────────────────────────────────────
+*.bak
+*.pre_restore_*

@@ -1,0 +1,32 @@
+FROM python:3.11-slim
+
+# متادیتا
+LABEL maintainer="vpn-bot" description="Telegram VPN Bot"
+
+WORKDIR /app
+
+# نصب وابستگی‌های سیستم
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# نصب وابستگی‌های Python (لایه جداگانه برای cache)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# کپی کد
+COPY . .
+
+# کاربر غیر-root + پوشه logs — همه در یک لایه تا chown درست اعمال شود
+RUN useradd -m -u 1001 botuser \
+    && mkdir -p /app/logs /app/data \
+    && chown -R botuser:botuser /app
+
+USER botuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"
+
+CMD ["python", "main.py"]

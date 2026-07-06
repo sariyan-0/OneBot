@@ -1,0 +1,68 @@
+# docker-compose.yml — ONEBOT VPN Bot
+# اگر SQLite: فقط سرویس bot بالا می‌آید
+# اگر PostgreSQL: DB_ENABLED=true در .env تنظیم می‌شود
+
+services:
+
+  # ── ربات تلگرام ──────────────────────────────
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    image: onebot-vpn-bot:latest
+    container_name: onebot_bot
+    restart: unless-stopped
+    # Docker این فایل را می‌خواند و مقادیر را به عنوان env vars به container پاس می‌دهد
+    # برای اعمال تغییرات .env: docker compose up -d  (نه docker compose restart)
+    env_file:
+      - .env
+    volumes:
+      - bot_logs:/app/logs
+      - bot_data:/app/data        # SQLite در این مسیر ذخیره می‌شود
+    ports:
+      # پورت webhook برای NOWPayments و MaxelPay
+      # پیش‌فرض: 9988 — با 3X-UI و سرویس‌های رایج تداخل ندارد
+      - "${WEBHOOK_PORT:-9988}:${WEBHOOK_PORT:-9988}"
+    networks:
+      - onebot_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── PostgreSQL (فقط وقتی profile=postgres فعال است) ─────
+  db:
+    image: postgres:16-alpine
+    container_name: onebot_postgres
+    restart: unless-stopped
+    profiles:
+      - postgres
+    environment:
+      POSTGRES_DB: vpn_bot
+      POSTGRES_USER: botuser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme123}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - onebot_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U botuser -d vpn_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+
+volumes:
+  postgres_data:
+    name: onebot_pgdata
+  bot_logs:
+    name: onebot_bot_logs
+  bot_data:
+    name: onebot_bot_data
+
+networks:
+  onebot_net:
+    driver: bridge
+    name: onebot_network

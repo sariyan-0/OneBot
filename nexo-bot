@@ -1,0 +1,981 @@
+#!/usr/bin/env bash
+# ============================================================
+#  nexo-bot — ONEBOT VPN Bot Management CLI v1.1
+#  Usage: nexo-bot
+#  Built by github.com/sariyan-0 — https://github.com/sariyan-0
+# ============================================================
+
+set -euo pipefail
+
+# ── Detect install dir ───────────────────────────────────────
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+BOT_DIR="$(dirname "$SCRIPT_PATH")"
+ENV_FILE="$BOT_DIR/.env"
+COMPOSE_FILE="$BOT_DIR/docker-compose.yml"
+
+# ── Colors ───────────────────────────────────────────────────
+RED='\033[0;31m';    GREEN='\033[0;32m';  YELLOW='\033[1;33m'
+BLUE='\033[0;34m';   CYAN='\033[0;36m';  BOLD='\033[1m'
+DIM='\033[2m';       RESET='\033[0m'
+
+# ── Detect DB mode ───────────────────────────────────────────
+_use_postgres() {
+  [[ -f "$ENV_FILE" ]] && grep -q "^USE_POSTGRES=true" "$ENV_FILE"
+}
+
+_dc() {
+  if _use_postgres; then
+    docker compose -f "$COMPOSE_FILE" --profile postgres "$@"
+  else
+    docker compose -f "$COMPOSE_FILE" "$@"
+  fi
+}
+
+# ── Helpers ──────────────────────────────────────────────────
+_banner() {
+  clear
+  echo -e "${CYAN}${BOLD}"
+  echo "  ███╗   ██╗███████╗██╗  ██╗ ██████╗ ██████╗  █████╗ "
+  echo "  ████╗  ██║██╔════╝╚██╗██╔╝██╔═══██╗██╔══██╗██╔══██╗"
+  echo "  ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║██████╔╝███████║"
+  echo "  ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║██╔══██╗██╔══██║"
+  echo "  ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝██║  ██║██║  ██║"
+  echo "  ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝"
+  echo -e "${RESET}${DIM}                  VPN Bot Management CLI v1.1${RESET}"
+  echo -e "${DIM}          Built by github.com/sariyan-0 · github.com/sariyan-0${RESET}"
+  echo ""
+  echo -e "  ${DIM}┌─────────────────────────────────────────────────┐${RESET}"
+  echo -e "  ${DIM}│${RESET}  ${YELLOW}☕ Donate (TRX / TRC10 / TRC20 / TRC71)${RESET}          ${DIM}│${RESET}"
+  echo -e "  ${DIM}│${RESET}  ${CYAN}TGzhHsfta8MdMPNzpexnqFCUiux7T1H5Ng${RESET}          ${DIM}│${RESET}"
+  echo -e "  ${DIM}└─────────────────────────────────────────────────┘${RESET}"
+  echo ""
+}
+
+_line()   { echo -e "${DIM}────────────────────────────────────────────────────${RESET}"; }
+_ok()     { echo -e "  ${GREEN}✔${RESET}  $*"; }
+_warn()   { echo -e "  ${YELLOW}⚠${RESET}  $*"; }
+_err()    { echo -e "  ${RED}✘${RESET}  $*"; }
+_info()   { echo -e "  ${CYAN}ℹ${RESET}  $*"; }
+_press()  { echo -e "\n${DIM}  Press Enter to continue...${RESET}"; read -r; }
+_rand_secret() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c "${1:-16}"; }
+
+_require_compose() {
+  if [[ ! -f "$COMPOSE_FILE" ]]; then
+    _err "docker-compose.yml not found in: $BOT_DIR"; _press; return 1
+  fi
+}
+
+_status_bar() {
+  local bot_status db_status db_mode
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq "^(onebot_bot|nexora_bot)$"; then
+    bot_status="${GREEN}● Running${RESET}"
+  else
+    bot_status="${RED}● Stopped${RESET}"
+  fi
+  if _use_postgres; then
+    db_mode="PostgreSQL"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq "^(onebot_postgres|nexora_postgres)$"; then
+      db_status="${GREEN}● Running${RESET}"
+    else
+      db_status="${YELLOW}● Stopped${RESET}"
+    fi
+  else
+    db_mode="SQLite"
+    db_status="${CYAN}● (file)${RESET}"
+  fi
+  echo -e "  Bot: $bot_status    DB ($db_mode): $db_status"
+  _line
+}
+
+# ════════════════════════════════════════════════════════════
+#  [1] Bot Control
+# ════════════════════════════════════════════════════════════
+_menu_control() {
+  while true; do
+    _banner
+    echo -e "  ${BOLD}🤖  Bot Control${RESET}"
+    _status_bar
+    echo -e "  ${BOLD}[1]${RESET}  Start"
+    echo -e "  ${BOLD}[2]${RESET}  Stop"
+    echo -e "  ${BOLD}[3]${RESET}  Restart"
+    echo -e "  ${BOLD}[4]${RESET}  Rebuild image + restart  (after code changes)"
+    echo -e "  ${BOLD}[5]${RESET}  Live logs  (Ctrl+C to exit)"
+    echo -e "  ${BOLD}[6]${RESET}  Last 100 lines of logs"
+    echo -e "  ${BOLD}[0]${RESET}  ${DIM}Back${RESET}"
+    _line
+    read -rp "  Choose: " ch
+    case $ch in
+      1) _require_compose && _dc up -d && _ok "Bot started." && _press ;;
+      2) _require_compose && _dc stop bot && _ok "Bot stopped." && _press ;;
+      3) _require_compose
+         _info "Recreating container to apply .env changes..."
+         _dc up -d --force-recreate bot
+         _ok "Restarted — .env changes applied." && _press ;;
+      4) _require_compose
+         _info "Rebuilding..."
+         _dc build --no-cache bot
+         _dc up -d --force-recreate bot
+         _ok "Done." && _press ;;
+      5) _require_compose && _dc logs -f bot ;;
+      6) _require_compose && _dc logs --tail=100 bot && _press ;;
+      0) return ;;
+      *) _warn "Invalid option." ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════════════════════
+#  [2] Configuration
+# ════════════════════════════════════════════════════════════
+_menu_config() {
+  while true; do
+    _banner
+    echo -e "  ${BOLD}⚙️   Configuration${RESET}"
+    _line
+    echo -e "  ${BOLD}[1]${RESET}  Edit .env               (main config)"
+    echo -e "  ${BOLD}[2]${RESET}  View .env               (read-only)"
+    echo -e "  ${BOLD}[3]${RESET}  Edit docker-compose.yml"
+    echo -e "  ${BOLD}[4]${RESET}  Show key settings        (token hidden)"
+    echo -e "  ${BOLD}[0]${RESET}  ${DIM}Back${RESET}"
+    _line
+    read -rp "  Choose: " ch
+    case $ch in
+      1)
+        [[ ! -f "$ENV_FILE" ]] && cp "$BOT_DIR/.env.example" "$ENV_FILE" && _info "Created .env from example."
+        ${EDITOR:-nano} "$ENV_FILE"
+        echo ""
+        _ok "Saved."
+        _warn "Changes take effect ONLY after recreating the container (not just restart)."
+        read -rp "  Apply changes now? Recreate container? (Y/n): " _yn
+        _yn="${_yn:-Y}"
+        if [[ "$_yn" =~ ^[Yy]$ ]]; then
+          _require_compose
+          _info "Recreating bot container with new .env..."
+          _dc up -d --force-recreate bot
+          _ok "Done — new .env is now active."
+        else
+          _info "Skipped. Run: onebot → Bot Control → [3] Restart  to apply later."
+        fi
+        _press ;;
+      2)
+        [[ -f "$ENV_FILE" ]] && { echo ""; cat "$ENV_FILE"; _press; } \
+          || { _err ".env not found."; _press; } ;;
+      3) ${EDITOR:-nano} "$COMPOSE_FILE" && _press ;;
+      4)
+        [[ -f "$ENV_FILE" ]] || { _err ".env not found."; _press; continue; }
+        echo ""
+        grep -E "^(BOT_TOKEN|PANEL_URL|PANEL_USERNAME|ADMIN_IDS|DB_URL|ADMIN_SECRET|USE_POSTGRES)" "$ENV_FILE" \
+          | sed 's/\(BOT_TOKEN=\).*/\1***hidden***/' \
+          | sed 's/\(ADMIN_SECRET=\).*/\1***hidden***/' \
+          | while IFS= read -r line; do echo -e "  ${CYAN}$line${RESET}"; done
+        _press ;;
+      0) return ;;
+      *) _warn "Invalid option." ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════════════════════
+#  [3] Database
+# ════════════════════════════════════════════════════════════
+_menu_database() {
+  while true; do
+    _banner
+    echo -e "  ${BOLD}🗄   Database${RESET}"
+    _line
+    if _use_postgres; then
+      echo -e "  ${BOLD}[1]${RESET}  Start database"
+      echo -e "  ${BOLD}[2]${RESET}  Stop database"
+      echo -e "  ${BOLD}[3]${RESET}  View database logs"
+      echo -e "  ${BOLD}[4]${RESET}  Open psql shell"
+      echo -e "  ${BOLD}[5]${RESET}  Apply migration  (add missing columns)"
+    else
+      echo -e "  ${DIM}Mode: SQLite — database is a local file${RESET}"
+      echo -e "  ${BOLD}[1]${RESET}  Show SQLite file path & size"
+    fi
+    echo -e "  ${BOLD}[0]${RESET}  ${DIM}Back${RESET}"
+    _line
+    read -rp "  Choose: " ch
+    if _use_postgres; then
+      case $ch in
+        1) _require_compose && _dc up -d db && _ok "Database started." && _press ;;
+        2) _require_compose && _dc stop db && _ok "Database stopped." && _press ;;
+        3) _require_compose && _dc logs --tail=50 db && _press ;;
+        4) _info "Connecting to psql..."
+           _dc exec db psql -U botuser -d vpn_bot; _press ;;
+      5)
+        _info "Running migrations..."
+        _dc exec db psql -U botuser -d vpn_bot \
+          -c "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS limit_ip INTEGER NOT NULL DEFAULT 0;
+              ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS warned_7d BOOLEAN NOT NULL DEFAULT FALSE;
+              ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS warned_3d BOOLEAN NOT NULL DEFAULT FALSE;
+              ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS warned_1d BOOLEAN NOT NULL DEFAULT FALSE;" \
+          && _ok "Migrations done." || _warn "Failed (columns may already exist — that's OK)."
+        _press ;;
+        0) return ;;
+        *) _warn "Invalid option." ;;
+      esac
+    else
+      case $ch in
+        1)
+          local vol_path
+          vol_path=$(docker volume inspect onebot_bot_data --format '{{.Mountpoint}}' 2>/dev/null || docker volume inspect nexora_bot_data --format '{{.Mountpoint}}' 2>/dev/null || echo "N/A")
+          echo ""
+          _info "Volume path: $vol_path"
+          if [[ "$vol_path" != "N/A" && -f "$vol_path/bot_data.db" ]]; then
+            ls -lh "$vol_path/bot_data.db"
+          else
+            _info "SQLite file not yet created (bot hasn't started, or path differs)."
+          fi
+          _press ;;
+        0) return ;;
+        *) _warn "Invalid option." ;;
+      esac
+    fi
+  done
+}
+
+# ════════════════════════════════════════════════════════════
+#  [4] Backup & Restore
+# ════════════════════════════════════════════════════════════
+
+_backup_ssl() {
+  local ts; ts=$(date +%Y%m%d_%H%M)
+    local dst="/root/onebot_ssl_backup_${ts}.tar.gz"
+  if [[ ! -d /etc/letsencrypt ]]; then
+    _warn "No SSL certificates found (/etc/letsencrypt does not exist)."
+    return 1
+  fi
+  tar -czf "$dst" /etc/letsencrypt/ 2>/dev/null \
+    && _ok "SSL certificates backed up: $dst" \
+    || { _err "SSL backup failed."; return 1; }
+}
+
+_backup_env() {
+  local ts; ts=$(date +%Y%m%d_%H%M)
+    local dst="/root/onebot_env_backup_${ts}.env"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    _warn ".env file not found."
+    return 1
+  fi
+  cp "$ENV_FILE" "$dst" && chmod 600 "$dst" \
+    && _ok ".env backed up: $dst" \
+    || _err ".env backup failed."
+}
+
+_backup_nginx() {
+  local ts; ts=$(date +%Y%m%d_%H%M)
+  local conf="/etc/nginx/conf.d/onebot-webhook.conf"
+  if [[ ! -f "$conf" ]]; then
+    _info "No nginx config to backup (not set up yet)."
+    return 0
+  fi
+    local dst="/root/onebot_nginx_backup_${ts}.conf"
+  cp "$conf" "$dst" && _ok "nginx config backed up: $dst"
+}
+
+_backup_full() {
+  local ts; ts=$(date +%Y%m%d_%H%M)
+  _info "Starting full backup..."
+  echo ""
+
+  # 1 — Database
+  if _use_postgres; then
+    local dump="/root/onebot_pgdump_${ts}.sql"
+    _require_compose
+    _info "Backing up PostgreSQL..."
+    _dc exec -T db pg_dump -U botuser vpn_bot > "$dump" \
+      && _ok "Database: $dump" || _err "pg_dump failed."
+  else
+    local vol_path
+    vol_path=$(docker volume inspect onebot_bot_data --format '{{.Mountpoint}}' 2>/dev/null || docker volume inspect nexora_bot_data --format '{{.Mountpoint}}' 2>/dev/null || echo "")
+    if [[ -n "$vol_path" && -f "$vol_path/bot_data.db" ]]; then
+      local db_dst="/root/onebot_sqlite_${ts}.db"
+      cp "$vol_path/bot_data.db" "$db_dst" && _ok "Database (SQLite): $db_dst"
+    else
+      _warn "SQLite file not found in Docker volume."
+    fi
+  fi
+
+  # 2 — SSL certificates
+  _info "Backing up SSL certificates..."
+  _backup_ssl
+
+  # 3 — .env
+  _info "Backing up .env..."
+  _backup_env
+
+  # 4 — nginx config
+  _info "Backing up nginx config..."
+  _backup_nginx
+
+  echo ""
+  _ok "Full backup complete. Files saved to /root/"
+}
+
+_menu_backup() {
+  while true; do
+    _banner
+    echo -e "  ${BOLD}💾  Backup & Restore${RESET}"
+    _line
+    echo -e "  ${BOLD}[1]${RESET}  Full backup            (database + SSL certs + .env + nginx)"
+    if _use_postgres; then
+      echo -e "  ${BOLD}[2]${RESET}  Database only          (PostgreSQL dump)"
+    else
+      echo -e "  ${BOLD}[2]${RESET}  Database only          (SQLite copy)"
+    fi
+    echo -e "  ${BOLD}[3]${RESET}  SSL certificates only  (/etc/letsencrypt → tar.gz)"
+    echo -e "  ${BOLD}[4]${RESET}  .env file only"
+    echo -e "  ${BOLD}[5]${RESET}  List backup files"
+    echo -e "  ${BOLD}[0]${RESET}  ${DIM}Back${RESET}"
+    _line
+    read -rp "  Choose: " ch
+    case $ch in
+      1) _backup_full; _press ;;
+
+      2)
+        if _use_postgres; then
+          local dump="/root/onebot_pgdump_$(date +%Y%m%d_%H%M).sql"
+          _require_compose
+          _info "Dumping PostgreSQL to $dump ..."
+          _dc exec -T db pg_dump -U botuser vpn_bot > "$dump" \
+            && _ok "Saved: $dump" || _err "pg_dump failed."
+        else
+          local vol_path
+          vol_path=$(docker volume inspect onebot_bot_data --format '{{.Mountpoint}}' 2>/dev/null || docker volume inspect nexora_bot_data --format '{{.Mountpoint}}' 2>/dev/null || echo "")
+          if [[ -n "$vol_path" && -f "$vol_path/bot_data.db" ]]; then
+            local dst="/root/onebot_sqlite_$(date +%Y%m%d_%H%M).db"
+            cp "$vol_path/bot_data.db" "$dst" && _ok "Saved: $dst"
+          else
+            _warn "SQLite file not found in Docker volume."
+          fi
+        fi
+        _press ;;
+
+      3) _backup_ssl; _press ;;
+      4) _backup_env; _press ;;
+
+      5)
+        echo ""
+        echo -e "  ${BOLD}Backup files in /root/:${RESET}"
+        ls -lh /root/onebot_*.db  2>/dev/null | awk '{print "  "$0}' || true
+        ls -lh /root/onebot_*.sql 2>/dev/null | awk '{print "  "$0}' || true
+        ls -lh /root/onebot_*.tar.gz 2>/dev/null | awk '{print "  "$0}' || true
+        ls -lh /root/onebot_*.env 2>/dev/null | awk '{print "  "$0}' || true
+        ls -lh /root/onebot_*.conf 2>/dev/null | awk '{print "  "$0}' || true
+        _press ;;
+
+      0) return ;;
+      *) _warn "Invalid option." ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════════════════════
+#  [5] System Info
+# ════════════════════════════════════════════════════════════
+_menu_sysinfo() {
+  _banner
+  echo -e "  ${BOLD}📊  System Info${RESET}"
+  _line
+  echo ""
+  echo -e "  ${BOLD}Containers:${RESET}"
+  docker ps --format "  {{.Names}}\t{{.Status}}" 2>/dev/null | column -t || true
+  echo ""
+  echo -e "  ${BOLD}Disk:${RESET}"
+  df -h / | awk 'NR==2{printf "  Used: %s / %s  (%s free)\n", $3, $2, $4}'
+  echo ""
+  echo -e "  ${BOLD}Memory:${RESET}"
+  free -h | awk '/^Mem:/{printf "  Used: %s / %s\n", $3, $2}'
+  echo ""
+  echo -e "  ${BOLD}Docker volumes:${RESET}"
+  docker volume ls --filter name=onebot 2>/dev/null | tail -n +2 | awk '{print "  "$2}' || true
+  echo ""
+  echo -e "  ${BOLD}Bot directory:${RESET}  $BOT_DIR"
+  echo -e "  ${BOLD}DB mode:${RESET}        $( _use_postgres && echo "PostgreSQL" || echo "SQLite" )"
+  echo -e "  ${BOLD}.env present:${RESET}   $( [[ -f "$ENV_FILE" ]] && echo -e "${GREEN}Yes${RESET}" || echo -e "${RED}No${RESET}" )"
+  echo ""
+  _press
+}
+
+# ════════════════════════════════════════════════════════════
+#  [7] SSL Manager  —  Let's Encrypt via certbot
+# ════════════════════════════════════════════════════════════
+
+# ── helpers ──────────────────────────────────────────────────
+
+_ssl_certbot_ok() {
+  # reliable detection: PATH re-scan after install
+  hash -r 2>/dev/null || true
+  certbot --version &>/dev/null
+}
+
+_ssl_list_domains() {
+  if [[ -d /etc/letsencrypt/live ]]; then
+    local domains
+    domains=$(ls /etc/letsencrypt/live/ 2>/dev/null | grep -v "^README$" || true)
+    if [[ -n "$domains" ]]; then
+      echo -e "\n  ${BOLD}Installed certificates:${RESET}"
+      while IFS= read -r d; do
+        [[ -z "$d" ]] && continue
+        local cert="/etc/letsencrypt/live/$d/fullchain.pem"
+        local exp="unknown"
+        [[ -f "$cert" ]] && exp=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null \
+                                  | sed 's/notAfter=//' || echo "unknown")
+        echo -e "  ${GREEN}✔${RESET}  ${BOLD}$d${RESET}  ${DIM}(expires: $exp)${RESET}"
+      done <<< "$domains"
+    else
+      echo -e "\n  ${DIM}No certificates found.${RESET}"
+    fi
+  else
+    echo -e "\n  ${DIM}No certificates yet. Use [1] to get one.${RESET}"
+  fi
+}
+
+_ssl_install_certbot() {
+  if _ssl_certbot_ok; then
+    _ok "certbot already installed: $(certbot --version 2>&1 | head -1)"
+    return 0
+  fi
+  _info "Installing certbot..."
+  if command -v apt-get &>/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y certbot \
+      2>&1 | grep -E "^(Setting up|certbot|E:|error)" || true
+  elif command -v dnf &>/dev/null; then
+    dnf install -y certbot 2>&1 | tail -3 || true
+  elif command -v yum &>/dev/null; then
+    yum install -y certbot 2>&1 | tail -3 || true
+  fi
+  # re-scan PATH
+  hash -r 2>/dev/null || true
+  if ! _ssl_certbot_ok; then
+    _info "Trying snap fallback..."
+    snap install --classic certbot 2>/dev/null && \
+      ln -sf /snap/bin/certbot /usr/bin/certbot 2>/dev/null || true
+    hash -r 2>/dev/null || true
+  fi
+  if _ssl_certbot_ok; then
+    _ok "certbot installed: $(certbot --version 2>&1 | head -1)"
+    return 0
+  fi
+  _err "certbot install failed. Run manually: apt install certbot"
+  return 1
+}
+
+_ssl_get_cert() {
+  local domain="$1"
+  local email="$2"
+
+  echo ""
+  _info "Preparing to obtain certificate for: ${BOLD}$domain${RESET}"
+
+  # ── DNS check ────────────────────────────────────────────
+  local server_ip domain_ip
+  server_ip=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null \
+              || curl -s --max-time 5 https://ifconfig.me 2>/dev/null \
+              || echo "")
+  domain_ip=$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | head -1 \
+              || dig +short "$domain" 2>/dev/null | grep -v '\.$' | tail -1 \
+              || echo "")
+
+  if [[ -n "$server_ip" && -n "$domain_ip" ]]; then
+    if [[ "$server_ip" == "$domain_ip" ]]; then
+      _ok "DNS OK — $domain → $domain_ip"
+    else
+      echo ""
+      _warn "DNS mismatch detected!"
+      echo -e "  Server IP  : ${CYAN}$server_ip${RESET}"
+      echo -e "  Domain IP  : ${YELLOW}$domain_ip${RESET}"
+      _warn "$domain does not point to this server."
+      _warn "Certificate issuance will likely fail."
+      echo ""
+      read -rp "  Continue anyway? (y/N): " _c
+      [[ "$_c" =~ ^[Yy]$ ]] || return 1
+    fi
+  else
+    _warn "Could not verify DNS (no IP detected). Proceeding..."
+  fi
+
+  # ── free port 80 if needed ───────────────────────────────
+  local _stopped_nginx=false _stopped_apache=false
+  if ss -tlnp 2>/dev/null | grep -q ':80 '; then
+    _warn "Port 80 is in use — stopping service temporarily..."
+    if systemctl is-active nginx  &>/dev/null; then
+      systemctl stop nginx  && _stopped_nginx=true  && _info "nginx stopped."
+    elif systemctl is-active apache2 &>/dev/null; then
+      systemctl stop apache2 && _stopped_apache=true && _info "apache2 stopped."
+    else
+      _warn "Unknown service on port 80 — certbot may fail."
+    fi
+  fi
+
+  # ── run certbot ──────────────────────────────────────────
+  echo ""
+  _info "Running certbot standalone..."
+  echo -e "  ${DIM}──────────────────────────────────────────${RESET}"
+
+  local cert_ok=false
+  if certbot certonly \
+      --standalone \
+      --non-interactive \
+      --agree-tos \
+      --email "$email" \
+      --domain "$domain" \
+      --preferred-challenges http \
+      2>&1 | while IFS= read -r line; do
+        echo -e "  ${DIM}$line${RESET}"
+      done; then
+    cert_ok=true
+  fi
+
+  # re-check exit status (pipe loses it above — use temp file trick)
+  if [[ -f "/etc/letsencrypt/live/$domain/fullchain.pem" ]]; then
+    cert_ok=true
+  fi
+
+  echo -e "  ${DIM}──────────────────────────────────────────${RESET}"
+  echo ""
+
+  # ── restart stopped services ─────────────────────────────
+  [[ "$_stopped_nginx"  == "true" ]] && systemctl start nginx   2>/dev/null && _info "nginx restarted." || true
+  [[ "$_stopped_apache" == "true" ]] && systemctl start apache2 2>/dev/null && _info "apache2 restarted." || true
+
+  if [[ "$cert_ok" == "true" ]]; then
+    _ok "Certificate obtained for ${BOLD}$domain${RESET} ✓"
+    return 0
+  else
+    _err "certbot failed. Check output above."
+    _info "Common causes:"
+    echo -e "  • Domain DNS not pointing to this server"
+    echo -e "  • Port 80 blocked by firewall"
+    echo -e "  • Rate limit hit (5 certs/domain/week)"
+    return 1
+  fi
+}
+
+_ssl_setup_nginx_proxy() {
+  local domain="$1"
+  local wh_port
+  wh_port=$(grep "^WEBHOOK_PORT=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 || echo "")
+  wh_port="${wh_port:-9988}"
+
+  if ! command -v nginx &>/dev/null; then
+    _info "Installing nginx..."
+    if command -v apt-get &>/dev/null; then
+      DEBIAN_FRONTEND=noninteractive apt-get install -y nginx 2>&1 | tail -3 || true
+    elif command -v dnf &>/dev/null; then
+      dnf install -y nginx 2>&1 | tail -3 || true
+    elif command -v yum &>/dev/null; then
+      yum install -y nginx 2>&1 | tail -3 || true
+    fi
+    hash -r 2>/dev/null || true
+  fi
+
+  if ! command -v nginx &>/dev/null; then
+    _warn "nginx not available — skipping proxy setup."
+    _warn "Webhook will only be reachable on HTTP port $wh_port."
+    return 1
+  fi
+
+  local conf_file="/etc/nginx/conf.d/onebot-webhook.conf"
+  _info "Writing nginx config → $conf_file"
+  cat > "$conf_file" <<NGINXCONF
+# ONEBOT VPN Bot — Webhook HTTPS proxy
+# Auto-generated by nexo-bot SSL Manager. Do not edit manually.
+
+server {
+    listen 80;
+    server_name ${domain};
+    # Let's Encrypt auto-renewal
+    location /.well-known/acme-challenge/ { root /var/www/html; }
+    location / { return 301 https://\$host\$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    server_name ${domain};
+
+    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+
+    # Proxy only webhook paths to the bot
+    location /webhook/ {
+        proxy_pass         http://127.0.0.1:${wh_port};
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_read_timeout 15s;
+    }
+    location /health {
+        proxy_pass http://127.0.0.1:${wh_port}/health;
+    }
+    location / { return 404; }
+}
+NGINXCONF
+
+  if nginx -t 2>/dev/null; then
+    systemctl enable nginx --now 2>/dev/null || true
+    systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || true
+    _ok "nginx proxy configured → https://${domain}/webhook/"
+    return 0
+  else
+    _err "nginx config test failed. Check: nginx -t"
+    return 1
+  fi
+}
+
+_ssl_update_env() {
+  local domain="$1"
+  local now_url="https://${domain}/webhook/nowpayments"
+  local maxel_url="https://${domain}/webhook/maxelpay"
+
+  echo ""
+  echo -e "  ${BOLD}Webhook URLs for this domain:${RESET}"
+  echo -e "  NOWPayments : ${CYAN}${now_url}${RESET}"
+  echo -e "  MaxelPay    : ${CYAN}${maxel_url}${RESET}"
+  echo ""
+  read -rp "  Update .env automatically? (Y/n): " _yn
+  _yn="${_yn:-Y}"
+  [[ "$_yn" =~ ^[Yy]$ ]] || return 0
+
+  _env_set "NOWPAYMENTS_IPN_URL"  "$now_url"
+  _env_set "MAXELPAY_WEBHOOK_URL" "$maxel_url"
+  _ok ".env updated."
+
+  echo ""
+  echo -e "  ${YELLOW}${BOLD}ACTION REQUIRED — Update your payment dashboards:${RESET}"
+  echo -e "  ${BOLD}1. NOWPayments${RESET}  → Settings → IPN URL:"
+  echo -e "     ${CYAN}${now_url}${RESET}"
+  echo -e "  ${BOLD}2. MaxelPay${RESET}     → API Keys → Webhook URL:"
+  echo -e "     ${CYAN}${maxel_url}${RESET}"
+  echo ""
+  read -rp "  Restart bot now to apply changes? (Y/n): " _ryn
+  _ryn="${_ryn:-Y}"
+  if [[ "$_ryn" =~ ^[Yy]$ ]]; then
+    _require_compose && _dc up -d --force-recreate bot
+    _ok "Bot restarted — new webhook URLs are active."
+  fi
+}
+
+_env_set() {
+  local key="$1"
+  local val="$2"
+  if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
+  else
+    echo "${key}=${val}" >> "$ENV_FILE"
+  fi
+}
+
+_menu_update() {
+  _banner
+  echo -e "  ${BOLD}⬆️   Update ONEBOT${RESET}"
+  _line
+  if [[ -d "$BOT_DIR/.git" ]]; then
+    _info "Pulling latest changes from git..."
+    git -C "$BOT_DIR" pull --rebase
+    _info "Rebuilding bot image..."
+    _dc build --no-cache bot
+    _dc up -d --force-recreate bot
+    _ok "Update complete."
+  else
+    _warn "This install is not a git clone, so auto-update is unavailable."
+    _info "Reinstall from the published GitHub source to enable update support."
+  fi
+  _press
+}
+
+_menu_admin_reset() {
+  _banner
+  echo -e "  ${BOLD}🔐  Reset Web Admin Login${RESET}"
+  _line
+  local new_user="admin"
+  local new_pass
+  new_pass="$(_rand_secret 12)"
+  _env_set "WEB_ADMIN_ENABLED" "true"
+  _env_set "WEB_ADMIN_USERNAME" "$new_user"
+  _env_set "WEB_ADMIN_PASSWORD" "$new_pass"
+  _env_set "WEB_ADMIN_COOKIE_SECRET" "$(_rand_secret 32)"
+  _require_compose
+  _dc up -d --force-recreate bot
+  echo ""
+  _ok "Web admin login reset."
+  echo -e "  Username: ${CYAN}${new_user}${RESET}"
+  echo -e "  Password: ${CYAN}${new_pass}${RESET}"
+  _warn "Store these now. They are written to .env and the bot has been recreated."
+  _press
+}
+
+_menu_ssl() {
+  while true; do
+    _banner
+    echo -e "  ${BOLD}🔒  SSL Manager — Let's Encrypt${RESET}"
+    _line
+    _ssl_list_domains
+    echo ""
+    echo -e "  ${BOLD}[1]${RESET}  Get new certificate      (domain / subdomain)"
+    echo -e "  ${BOLD}[2]${RESET}  Renew all certificates   (certbot renew)"
+    echo -e "  ${BOLD}[3]${RESET}  Show certificate details"
+    echo -e "  ${BOLD}[0]${RESET}  ${DIM}Back${RESET}"
+    _line
+    read -rp "  Choose: " ch
+    case $ch in
+      1)
+        echo ""
+        echo -e "  ${BOLD}Domain or subdomain${RESET}  ${DIM}(e.g. pay.example.com)${RESET}"
+        read -rp "  Domain: " _domain
+        _domain="${_domain// /}"
+        if [[ -z "$_domain" ]]; then
+          _warn "Domain cannot be empty."; _press; continue
+        fi
+
+        # email — optional, auto-generate if skipped
+        echo ""
+        echo -e "  ${BOLD}Email for Let's Encrypt notifications${RESET}  ${DIM}(press Enter to skip)${RESET}"
+        read -rp "  Email [optional]: " _email
+        if [[ -z "$_email" ]]; then
+          _email="noreply@${_domain}"
+          _info "Using auto email: $_email"
+        fi
+
+        echo ""
+        _ssl_install_certbot || { _press; continue; }
+        _ssl_get_cert "$_domain" "$_email" || { _press; continue; }
+
+        echo ""
+        read -rp "  Setup nginx HTTPS proxy for webhooks? (Y/n): " _nyn
+        _nyn="${_nyn:-Y}"
+        if [[ "$_nyn" =~ ^[Yy]$ ]]; then
+          _ssl_setup_nginx_proxy "$_domain"
+        fi
+
+        _ssl_update_env "$_domain"
+        _press ;;
+
+      2)
+        _info "Renewing certificates..."
+        if _ssl_certbot_ok; then
+          if command -v nginx &>/dev/null && systemctl is-active nginx &>/dev/null; then
+            certbot renew --nginx --quiet 2>&1 | tail -5 || \
+              certbot renew --quiet 2>&1 | tail -5
+          else
+            certbot renew --standalone --quiet 2>&1 | tail -5
+          fi
+          _ok "Renewal complete."
+        else
+          _warn "certbot not installed. Use [1] to get your first certificate."
+        fi
+        _press ;;
+
+      3)
+        echo ""
+        if _ssl_certbot_ok; then
+          certbot certificates 2>/dev/null || _info "No certificates found."
+        else
+          _warn "certbot not installed."
+        fi
+        _press ;;
+
+      0) return ;;
+      *) _warn "Invalid option." ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════════════════════
+#  [8] Webhook Manager
+# ════════════════════════════════════════════════════════════
+
+_webhook_show_current() {
+  echo ""
+  local now_url maxel_url wh_port
+  now_url=$(grep   "^NOWPAYMENTS_IPN_URL="  "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+  maxel_url=$(grep "^MAXELPAY_WEBHOOK_URL=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+  wh_port=$(grep   "^WEBHOOK_PORT="         "$ENV_FILE" 2>/dev/null | cut -d= -f2  || true)
+  echo -e "  ${BOLD}Current webhook configuration:${RESET}"
+  echo -e "  NOWPayments  : ${CYAN}${now_url:-(not set)}${RESET}"
+  echo -e "  MaxelPay     : ${CYAN}${maxel_url:-(not set)}${RESET}"
+  echo -e "  Internal port: ${CYAN}${wh_port:-9988}${RESET}"
+  echo ""
+}
+
+_webhook_pick_domain() {
+  PICKED_DOMAIN=""
+  local domains_arr=()
+  if [[ -d /etc/letsencrypt/live ]]; then
+    while IFS= read -r d; do
+      [[ "$d" == "README" || -z "$d" ]] && continue
+      domains_arr+=("$d")
+    done < <(ls /etc/letsencrypt/live/ 2>/dev/null || true)
+  fi
+
+  if [[ ${#domains_arr[@]} -gt 0 ]]; then
+    echo -e "\n  ${BOLD}Domains with SSL certificates:${RESET}"
+    for i in "${!domains_arr[@]}"; do
+      echo -e "  ${BOLD}[$((i+1))]${RESET}  ${domains_arr[$i]}"
+    done
+    echo -e "  ${BOLD}[m]${RESET}  Enter manually"
+    echo ""
+    read -rp "  Select: " _pick
+    if [[ "$_pick" =~ ^[0-9]+$ ]] && (( _pick >= 1 && _pick <= ${#domains_arr[@]} )); then
+      PICKED_DOMAIN="${domains_arr[$((_pick-1))]}"
+    else
+      read -rp "  Domain: " PICKED_DOMAIN
+    fi
+  else
+    _warn "No SSL certificates found. Use SSL Manager [7] first."
+    echo -e "  Or enter a domain manually (without SSL):"
+    read -rp "  Domain: " PICKED_DOMAIN
+  fi
+  PICKED_DOMAIN="${PICKED_DOMAIN// /}"
+}
+
+_menu_webhook() {
+  while true; do
+    _banner
+    echo -e "  ${BOLD}🔗  Webhook Manager${RESET}"
+    _line
+    _webhook_show_current
+    echo -e "  ${BOLD}[1]${RESET}  Set webhook URLs from SSL domain"
+    echo -e "  ${BOLD}[2]${RESET}  Set NOWPayments IPN URL manually"
+    echo -e "  ${BOLD}[3]${RESET}  Set MaxelPay Webhook URL manually"
+    echo -e "  ${BOLD}[4]${RESET}  Test webhook server  (/health check)"
+    echo -e "  ${BOLD}[0]${RESET}  ${DIM}Back${RESET}"
+    _line
+    read -rp "  Choose: " ch
+    case $ch in
+      1)
+        _webhook_pick_domain
+        if [[ -n "$PICKED_DOMAIN" ]]; then
+          _ssl_update_env "$PICKED_DOMAIN"
+        fi
+        _press ;;
+
+      2)
+        echo ""
+        echo -e "  ${DIM}Example: https://pay.example.com/webhook/nowpayments${RESET}"
+        read -rp "  NOWPayments IPN URL: " _url
+        [[ -z "$_url" ]] && { _press; continue; }
+        _env_set "NOWPAYMENTS_IPN_URL" "$_url"
+        _ok "NOWPayments IPN URL updated."
+        echo ""
+        _warn "ACTION: Also update this in your NOWPayments dashboard → Settings → IPN URL"
+        echo ""
+        read -rp "  Restart bot now? (Y/n): " _r; _r="${_r:-Y}"
+        [[ "$_r" =~ ^[Yy]$ ]] && _require_compose && \
+          _dc up -d --force-recreate bot && _ok "Bot restarted."
+        _press ;;
+
+      3)
+        echo ""
+        echo -e "  ${DIM}Example: https://pay.example.com/webhook/maxelpay${RESET}"
+        read -rp "  MaxelPay Webhook URL: " _url
+        [[ -z "$_url" ]] && { _press; continue; }
+        _env_set "MAXELPAY_WEBHOOK_URL" "$_url"
+        _ok "MaxelPay Webhook URL updated."
+        echo ""
+        _warn "ACTION: Also update this in your MaxelPay dashboard → API Keys → Webhook URL"
+        echo ""
+        read -rp "  Restart bot now? (Y/n): " _r; _r="${_r:-Y}"
+        [[ "$_r" =~ ^[Yy]$ ]] && _require_compose && \
+          _dc up -d --force-recreate bot && _ok "Bot restarted."
+        _press ;;
+
+      4)
+        local _port
+        _port=$(grep "^WEBHOOK_PORT=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 || echo "9988")
+        _port="${_port:-9988}"
+        echo ""
+        _info "Testing webhook server on port ${_port}..."
+        if curl -sf --max-time 5 "http://127.0.0.1:${_port}/health" &>/dev/null; then
+          _ok "Webhook server is running  (http://127.0.0.1:${_port}/health) ✓"
+        else
+          _err "Webhook server is not responding."
+          _info "Check logs: onebot → Bot Control → [5] Live logs"
+        fi
+        _press ;;
+
+      0) return ;;
+      *) _warn "Invalid option." ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════════════════════
+#  [6] Uninstall
+# ════════════════════════════════════════════════════════════
+_menu_uninstall() {
+  _banner
+  echo -e "  ${RED}${BOLD}⚠️   UNINSTALL — Complete Removal${RESET}"
+  _line
+  echo -e "  ${YELLOW}This will permanently delete:${RESET}"
+  echo -e "  • Docker containers  (onebot_bot, onebot_postgres)"
+  echo -e "  • Docker image       (onebot-vpn-bot)"
+  echo -e "  • Docker volumes     (all data & logs)"
+  echo -e "  • Bot directory      ($BOT_DIR)"
+  echo -e "  • onebot command     (/usr/local/bin/onebot, /usr/local/bin/ONEBOT)"
+  echo -e "  • nexo-bot command   (/usr/local/bin/nexo-bot)"
+  echo ""
+  echo -e "  ${RED}${BOLD}THIS CANNOT BE UNDONE.${RESET}"
+  _line
+  read -rp "  Type  DELETE  to confirm: " confirm
+  [[ "$confirm" != "DELETE" ]] && { _warn "Cancelled."; _press; return; }
+
+  echo ""
+  _info "Stopping containers..."
+  docker compose -f "$COMPOSE_FILE" --profile postgres down -v --remove-orphans 2>/dev/null || true
+  _info "Removing image..."
+  docker rmi onebot-vpn-bot:latest 2>/dev/null || true
+  _info "Removing bot directory..."
+  rm -rf "$BOT_DIR"
+  _info "Removing nexo-bot command..."
+  rm -f /usr/local/bin/onebot /usr/local/bin/ONEBOT
+  rm -f /usr/local/bin/nexo-bot
+  echo ""
+  echo -e "  ${GREEN}${BOLD}✔  ONEBOT VPN Bot has been completely removed.${RESET}"
+  echo ""
+  exit 0
+}
+
+# ════════════════════════════════════════════════════════════
+#  MAIN MENU
+# ════════════════════════════════════════════════════════════
+main() {
+  while true; do
+    _banner
+    _status_bar
+    echo -e "  ${BOLD}[1]${RESET}  🤖  Bot Control      (start / stop / restart / logs)"
+    echo -e "  ${BOLD}[2]${RESET}  ⚙️   Configuration    (edit .env)"
+    echo -e "  ${BOLD}[3]${RESET}  🗄   Database         (start / psql / migrate)"
+    echo -e "  ${BOLD}[4]${RESET}  💾  Backup & Restore"
+    echo -e "  ${BOLD}[5]${RESET}  📊  System Info"
+    echo -e "  ${BOLD}[6]${RESET}  ${RED}🗑   Uninstall${RESET}        (remove everything)"
+    echo -e "  ${BOLD}[7]${RESET}  🔒  SSL Manager       (Let's Encrypt certificate)"
+    echo -e "  ${BOLD}[8]${RESET}  🔗  Webhook Manager   (manage webhook URLs)"
+    echo -e "  ${BOLD}[9]${RESET}  ⬆️  Update            (git pull + rebuild)"
+    echo -e "  ${BOLD}[10]${RESET} 🔐  Reset admin login  (generate new credentials)"
+    echo -e "  ${BOLD}[0]${RESET}  ${DIM}Exit${RESET}"
+    _line
+    echo -e "  ${DIM}Dir: $BOT_DIR${RESET}"
+    echo ""
+    read -rp "  Choose: " ch
+    case $ch in
+      1) _menu_control ;;
+      2) _menu_config ;;
+      3) _menu_database ;;
+      4) _menu_backup ;;
+      5) _menu_sysinfo ;;
+      6) _menu_uninstall ;;
+      7) _menu_ssl ;;
+      8) _menu_webhook ;;
+      9) _menu_update ;;
+      10) _menu_admin_reset ;;
+      0) echo ""; exit 0 ;;
+      *) _warn "Invalid option." ;;
+    esac
+  done
+}
+
+main

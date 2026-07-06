@@ -1,0 +1,43 @@
+"""database package — engine, session factory, و crud."""
+
+from .engine import AsyncSessionLocal, engine, init_db
+from .crud import (
+    create_user,
+    get_or_create_user,
+    get_user_by_telegram_id,
+    create_subscription,
+    get_user_subscriptions,
+    get_subscription_by_email,
+    update_subscription_traffic,
+    update_subscription_status,
+    create_payment,
+    get_payment_by_order_id,
+    get_payment_by_payment_id,
+    update_payment_status,
+    get_stats,
+    get_total_revenue,
+    create_ticket,
+    get_ticket,
+    get_user_tickets,
+    get_open_tickets,
+    add_ticket_message,
+    close_ticket,
+    get_user_by_referral_code,
+    set_referral_code,
+    create_referral,
+    get_referral_stats,
+    mark_referral_rewarded,
+)
+
+__all__ = [
+    "AsyncSessionLocal", "engine", "init_db",
+    "create_user", "get_or_create_user", "get_user_by_telegram_id",
+    "create_subscription", "get_user_subscriptions",
+    "get_subscription_by_email", "update_subscription_traffic", "update_subscription_status",
+    "create_payment", "get_payment_by_order_id", "get_payment_by_payment_id",
+    "update_payment_status", "get_stats", "get_total_revenue",
+    "create_ticket", "get_ticket", "get_user_tickets", "get_open_tickets",
+    "add_ticket_message", "close_ticket",
+    "get_user_by_referral_code", "set_referral_code", "create_referral",
+    "get_referral_stats", "mark_referral_rewarded",
+]
