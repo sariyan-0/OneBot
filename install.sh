@@ -579,6 +579,7 @@ else
 fi
 
 cd "$INSTALL_DIR"
+export COMPOSE_PROJECT_NAME="onebot"
 
 # Install the management command as soon as the files are in place so an
 # interrupted install still leaves a usable recovery entrypoint.
@@ -595,7 +596,14 @@ fi
 _step "Cleaning up old containers (if any)..."
 
 # لیست کانتینرهایی که ممکن است conflict داشته باشند
-OLD_CONTAINERS=("vpn_bot" "vpn_postgres" "nexora_bot" "nexora_postgres")
+OLD_CONTAINERS=(
+  "vpn_bot"
+  "vpn_postgres"
+  "nexora_bot"
+  "nexora_postgres"
+  "onebot_bot"
+  "onebot_postgres"
+)
 for c in "${OLD_CONTAINERS[@]}"; do
   if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${c}$"; then
     _warn "Removing old container: $c"
@@ -604,11 +612,18 @@ for c in "${OLD_CONTAINERS[@]}"; do
 done
 
 # شبکه‌های قدیمی که ممکن است با project name اشتباه ساخته شده باشند
-OLD_NETWORKS=("vpn_network" "nexora_network")
+OLD_NETWORKS=("vpn_network" "nexora_network" "onebot_network")
 for n in "${OLD_NETWORKS[@]}"; do
   if docker network ls --format '{{.Name}}' 2>/dev/null | grep -q "^${n}$"; then
     _warn "Removing old network: $n (will be recreated)"
     docker network rm "$n" 2>/dev/null || true
+  fi
+done
+
+OLD_VOLUMES=("onebot_bot_logs" "onebot_bot_data" "onebot_pgdata")
+for v in "${OLD_VOLUMES[@]}"; do
+  if docker volume ls --format '{{.Name}}' 2>/dev/null | grep -q "^${v}$"; then
+    _info "Keeping existing volume: $v"
   fi
 done
 
@@ -934,6 +949,7 @@ _ok ".env written and secured (chmod 600)"
 # ════════════════════════════════════════════════════════════
 _step "Building Docker image..."
 cd "$INSTALL_DIR"
+export COMPOSE_PROJECT_NAME="onebot"
 
 # Build فقط سرویس bot
 docker compose build --no-cache bot
