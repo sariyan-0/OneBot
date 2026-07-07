@@ -90,6 +90,7 @@ from services.payment_methods import (
    is_crypto_invoice, set_crypto_invoice,
    get_crypto_gateway, set_crypto_gateway,
 )
+from services.subscription import delete_subscription_completely
 
 router = Router(name="admin")
 
@@ -1614,7 +1615,6 @@ async def cb_adm_sub_del_confirm(callback: CallbackQuery) -> None:
     text = (
         f"🗑 <b>حذف اشتراک</b>\n\n"
         f"📧 ایمیل: <code>{sub.email}</code>\n\n"
-        "⚠️ این اشتراک از پنل 3X-UI <b>حذف می‌شود</b>.\n"
         "آیا مطمئن هستید؟"
     )
     try:
@@ -1634,22 +1634,17 @@ async def cb_adm_sub_del(callback: CallbackQuery) -> None:
     sub_id = int(parts[1])
     tg_id  = int(parts[2])
 
-    async with AsyncSessionLocal() as session:
-        from database.models import Subscription
-        from sqlalchemy import select
-        res = await session.execute(select(Subscription).where(Subscription.id == sub_id))
-        sub = res.scalar_one_or_none()
-        if not sub:
-            await callback.answer("اشتراک پیدا نشد!", show_alert=True)
-            return
-        email = sub.email
-
     try:
-        async with _xui_client() as xui:
-            await xui.delete_client(email)
         async with AsyncSessionLocal() as session:
-            from database.crud import update_subscription_status
-            await update_subscription_status(session, sub_id, "deleted")
+            from database.models import Subscription
+            from sqlalchemy import select
+
+            res = await session.execute(select(Subscription).where(Subscription.id == sub_id))
+            sub = res.scalar_one_or_none()
+            if not sub:
+                await callback.answer("اشتراک پیدا نشد!", show_alert=True)
+                return
+            await delete_subscription_completely(session, sub)
         await callback.answer("✅ اشتراک حذف شد.", show_alert=True)
         # برگشت به لیست اشتراک‌های کاربر — بدون تغییر callback.data (frozen در aiogram 3)
         await _show_user_subs(callback, tg_id)
@@ -2936,7 +2931,11 @@ async def _send_payment_card(target, payment, user, sub=None) -> None:
         "crypto":      "💱 کریپتو",
     }
     method_fa = _method_labels.get(payment.payment_method, "💱 کریپتو")
-    amount_str = f"{payment.amount_rial:,} ریال" if getattr(payment, "amount_rial", None) else f"{payment.amount_usdt} دلار"
+    if getattr(payment, "amount_rial", None):
+        amount_toman = int(payment.amount_rial // 10)
+        amount_str = f"{amount_toman:,} تومان ({payment.amount_rial:,} ریال)"
+    else:
+        amount_str = f"{payment.amount_usdt} دلار"
     status_fa = _payment_status_label(payment.status)
 
     sub_info = ""

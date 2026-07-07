@@ -25,18 +25,21 @@ from database.crud import (
     get_or_create_user,
     update_payment_status,
 )
+from services.payment_config import get_maxelpay_config
 from services.maxelpay import MaxelPayClient, MaxelPayError, PAID_STATUSES, FAILED_STATUSES
+from services.referral import grant_referral_commission_for_payment
 from services.subscription import create_new_subscription, apply_paid_plan_to_subscription
 from services.wallet import credit_wallet
 
 router = Router(name="maxelpay_payment")
 
 
-def _maxelpay_client() -> MaxelPayClient:
-    """ساخت کلاینت MaxelPay از تنظیمات .env."""
+async def _maxelpay_client() -> MaxelPayClient:
+    """ساخت کلاینت MaxelPay از تنظیمات ذخیره‌شده یا .env."""
+    runtime = await get_maxelpay_config()
     return MaxelPayClient(
-        api_key     = settings.maxelpay_api_key,
-        webhook_url = settings.maxelpay_webhook_callback_url(),
+        api_key     = runtime["api_key"],
+        webhook_url = runtime["webhook_url"] or settings.maxelpay_webhook_callback_url(),
         success_url = f"https://t.me/{(getattr(settings,'bot_username','') or '').lstrip('@')}",
         cancel_url  = f"https://t.me/{(getattr(settings,'bot_username','') or '').lstrip('@')}",
     )
@@ -57,10 +60,11 @@ async def cb_pay_maxel(callback: CallbackQuery) -> None:
     amount    = float(parts[2]) if len(parts) > 2 else 0.0
     plan_name = parts[3] if len(parts) > 3 else "اشتراک VPN"
 
-    if not settings.maxelpay_api_key:
+    runtime = await get_maxelpay_config()
+    if not runtime["api_key"]:
         await callback.message.answer(
             "⚠️ درگاه MaxelPay هنوز تنظیم نشده.\n"
-            "ادمین باید <code>MAXELPAY_API_KEY</code> را در .env وارد کند.",
+            "ادمین باید <code>MAXELPAY_API_KEY</code> را در تنظیمات وارد کند.",
             parse_mode="HTML",
         )
         return
@@ -75,7 +79,7 @@ async def cb_pay_maxel(callback: CallbackQuery) -> None:
             )
 
         order_id = f"maxel_{tg_user.id}_{plan_id}_{uuid.uuid4().hex[:8]}"
-        client   = _maxelpay_client()
+        client   = await _maxelpay_client()
         pay_session = await client.create_session(
             order_id           = order_id,
             amount_usd         = amount,
@@ -175,10 +179,11 @@ async def cb_sub_pay_maxel(callback: CallbackQuery) -> None:
     plan_id = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
     amount = float(parts[4]) if len(parts) > 4 else 0.0
 
-    if not settings.maxelpay_api_key:
+    runtime = await get_maxelpay_config()
+    if not runtime["api_key"]:
         await callback.message.answer(
             "⚠️ درگاه MaxelPay هنوز تنظیم نشده.\n"
-            "ادمین باید <code>MAXELPAY_API_KEY</code> را در .env وارد کند.",
+            "ادمین باید <code>MAXELPAY_API_KEY</code> را در تنظیمات وارد کند.",
             parse_mode="HTML",
         )
         return
@@ -192,7 +197,7 @@ async def cb_sub_pay_maxel(callback: CallbackQuery) -> None:
             )
 
         order_id = f"{flow}_{target_sub_id}_{plan_id}_{uuid.uuid4().hex[:8]}"
-        client = _maxelpay_client()
+        client = await _maxelpay_client()
         pay_session = await client.create_session(
             order_id=order_id,
             amount_usd=amount,
@@ -312,9 +317,10 @@ async def _confirm_maxel_and_create_sub(callback: CallbackQuery, payment, order_
                 admin_ids=settings.admin_ids,
             )
             if order_id.startswith("wallet_"):
-                credited = await credit_wallet(session, db_user.id, float(payment.amount_usdt))
+                credited = await credit_wallet(session, db_user.id, float(payment.amount_usdt), currency="usd")
                 await update_payment_status(session, payment.id, "confirmed")
                 result = None
+                await grant_referral_commission_for_payment(session, payment)
             elif order_id.startswith(("renew_", "change_")):
                 parts = order_id.split("_", 3)
                 action = parts[0]
@@ -327,6 +333,8 @@ async def _confirm_maxel_and_create_sub(callback: CallbackQuery, payment, order_
                     telegram_id=tg_user.id,
                     action=action,
                 )
+                await update_payment_status(session, payment.id, "confirmed", result.subscription.id)
+                await grant_referral_commission_for_payment(session, payment)
             else:
                 result = await create_new_subscription(
                     session    = session,
@@ -336,6 +344,7 @@ async def _confirm_maxel_and_create_sub(callback: CallbackQuery, payment, order_
                     plan_id    = getattr(payment, "inbound_id", 0),
                 )
                 await update_payment_status(session, payment.id, "confirmed", result.subscription.id)
+                await grant_referral_commission_for_payment(session, payment)
 
         if order_id.startswith("wallet_"):
             await callback.message.answer(
@@ -343,7 +352,7 @@ async def _confirm_maxel_and_create_sub(callback: CallbackQuery, payment, order_
                 f"━━━━━━━━━━━━━━━\n"
                 f"🔖 سفارش: <code>{order_id}</code>\n"
                 f"💰 مبلغ افزوده‌شده: <b>{float(payment.amount_usdt):.2f} دلار</b>\n"
-                f"💳 موجودی جدید: <b>{credited:.2f} دلار</b>",
+                f"💳 موجودی جدید: <b>{float(credited):.2f} دلار</b>",
                 parse_mode="HTML",
             )
         else:

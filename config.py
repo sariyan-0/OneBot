@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     # ===== دیتابیس =====
     db_url: str = Field(
-        default="sqlite+aiosqlite:///./bot_data.db",
+        default="sqlite+aiosqlite:////data/bot_data.db",
         description="آدرس اتصال دیتابیس (SQLite یا PostgreSQL)",
     )
 

@@ -24,8 +24,9 @@ from database import AsyncSessionLocal, get_or_create_user, get_user_by_telegram
 from database.crud import create_payment, get_active_plans, get_all_plans, get_plan, get_user_subscriptions
 from keyboards.main_menu import get_main_menu
 from services.banner import send_with_banner
-from services.card_payment import calc_rial_amount, fmt_card_number, get_card_info
+from services.card_payment import calc_rial_amount, fmt_card_number, get_card_info, toman_from_usdt, usdt_amount_from_toman
 from services.maxelpay import MaxelPayClient, MaxelPayError
+from services.payment_config import get_maxelpay_config
 from services.payments import CryptoPaymentService, PaymentAPIError, PaymentError
 from services.payment_methods import get_payment_status
 from services.welcome import (
@@ -36,16 +37,18 @@ from services.welcome import (
 )
 from keyboards.plans import (
     get_confirm_purchase_keyboard,
+    get_plan_confirm_keyboard,
     get_plan_detail_keyboard,
     get_plans_keyboard,
     get_subscription_detail_keyboard,
 )
 from services.subscription import (
     create_new_subscription,
+    delete_subscription_completely,
     get_subscriptions_status,
     rotate_subscription_link,
 )
-from services.wallet import wallet_balance
+from services.wallet import wallet_balance, wallet_balance_toman
 from services.xui_api import XUIClient
 from utils.qrcode_gen import generate_qr_code
 
@@ -69,7 +72,7 @@ async def _safe_edit(callback: CallbackQuery, text: str, **kwargs) -> None:
     """edit_text امن — اگه پیام عکس‌دار بود، answer جدید می‌فرسته."""
     try:
         if callback.message.photo or callback.message.document:  # type: ignore
-            await callback.message.answer(text, **kwargs)  # type: ignore
+            await callback.message.edit_caption(caption=text, **kwargs)  # type: ignore
         else:
             await callback.message.edit_text(text, **kwargs)  # type: ignore
     except Exception:
@@ -121,6 +124,49 @@ def _fmt_expiry(expiry_date) -> str:
         return f"{date_str}  (امروز منقضی می‌شود)"
     else:
         return f"{date_str}  ({delta} روز مانده)"
+
+
+async def _plan_toman_price(plan) -> int:
+    price_toman = int(getattr(plan, "price_toman", 0) or 0)
+    if price_toman > 0:
+        return price_toman
+    try:
+        card = await get_card_info()
+        rate = int(card.get("rate", 0) or 0)
+    except Exception:
+        rate = 0
+    return toman_from_usdt(float(plan.price_usdt), rate) if rate > 0 else 0
+
+
+async def _build_profile_view(tg_user, db_user) -> tuple[str, object]:
+    async with AsyncSessionLocal() as session:
+        subs = await get_subscriptions_status(session, db_user.id)
+        balance = await wallet_balance(session, db_user.id)
+        balance_toman = await wallet_balance_toman(session, db_user.id)
+
+    from html import escape
+    first_name = escape(tg_user.first_name or "-")
+    username = escape(tg_user.username or "-")
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💰 شارژ کیف پول", callback_data="wallet_topup")
+    kb.button(text="🔄 بروزرسانی", callback_data="profile_refresh")
+    kb.button(text="🔙 بازگشت", callback_data="back_main")
+    kb.adjust(2, 1)
+
+    text = (
+        f"👤 <b>پروفایل شما</b>\n\n"
+        f"🆔 آی‌دی: <code>{tg_user.id}</code>\n"
+        f"👋 نام: {first_name}\n"
+        f"📝 نام کاربری: @{username}\n"
+        f"💼 موجودی کیف پول:\n"
+        f"  • <b>${balance:.2f}</b>\n"
+        f"  • <b>{balance_toman:,} تومان</b>\n"
+        f"📦 اشتراک‌های فعال: {len(subs)}\n"
+        f"📅 تاریخ ثبت‌نام: {db_user.created_at.strftime('%Y-%m-%d')}"
+    )
+    return text, kb.as_markup()
 
 
 def _sub_list_status(sub) -> tuple[str, str]:
@@ -286,19 +332,22 @@ async def menu_buy_config(message: Message) -> None:
         unlimited_count = sum(1 for p in plans if p.traffic_gb == 0)
         sections = []
         if limited_count:
-            sections.append(f"📦 {limited_count} پلن حجمی")
+            sections.append(f"{limited_count} پلن حجمی")
         if unlimited_count:
-            sections.append(f"♾ {unlimited_count} پلن نامحدود")
+            sections.append(f"{unlimited_count} پلن نامحدود")
+
+        summary_line = f"{' | '.join(sections)}\n\n" if sections else ""
 
         text = (
             "📦 *پلن‌های موجود:*\n\n"
-            f"{' | '.join(sections)}\n\n"
+            f"{summary_line}"
             "یک پلن برای مشاهده جزئیات انتخاب کنید:"
         )
+        pm = await get_payment_status()
         await message.answer(
             text,
             parse_mode="Markdown",
-            reply_markup=get_plans_keyboard(plans, rate),
+            reply_markup=get_plans_keyboard(plans, rate, show_crypto_price=pm["crypto"], show_toman_price=pm["card"]),
         )
 
     except Exception as e:
@@ -322,12 +371,13 @@ async def cb_show_plans(callback: CallbackQuery) -> None:
             rate = (await get_card_info()).get("rate", 0) or 0
         except Exception:
             rate = 0
+        pm = await get_payment_status()
 
         await _safe_edit(
             callback,
             "📦 *پلن‌های موجود:*\n\nیک پلن برای مشاهده جزئیات انتخاب کنید:",
             parse_mode="Markdown",
-            reply_markup=get_plans_keyboard(plans, rate),
+            reply_markup=get_plans_keyboard(plans, rate, show_crypto_price=pm["crypto"], show_toman_price=pm["card"]),
         )
     except Exception as e:
         logger.error(f"خطا در دریافت پلن‌ها: {e}")
@@ -348,11 +398,7 @@ async def cb_plan_detail(callback: CallbackQuery) -> None:
         plan = await get_plan(session, plan_id)
         db_user = await get_user_by_telegram_id(session, callback.from_user.id) if callback.from_user else None
         wallet_usdt = await wallet_balance(session, db_user.id) if db_user else 0.0
-        rate = 0
-        try:
-            rate = (await get_card_info()).get("rate", 0) or 0
-        except Exception:
-            rate = 0
+        wallet_toman = await wallet_balance_toman(session, db_user.id) if db_user else 0
 
     if not plan or not plan.is_active:
         await callback.answer("⚠️ این پلن دیگر در دسترس نیست.", show_alert=True)
@@ -362,24 +408,39 @@ async def cb_plan_detail(callback: CallbackQuery) -> None:
     device_text = "نامحدود" if not plan.limit_ip else f"{plan.limit_ip} دستگاه"
     inbound_ids = plan.get_inbound_ids()
     inbound_text = ", ".join(map(str, inbound_ids)) if inbound_ids else "همه اینباندهای فعال"
-    price_toman = getattr(plan, "price_toman", 0) or 0
+    price_toman = await _plan_toman_price(plan)
+    pm = await get_payment_status()
+    card_line = f"💵 قیمت کارت: `{price_toman:,} تومان`\n" if (price_toman and pm["card"]) else ""
+    crypto_line = f"💠 قیمت کریپتو: `${plan.price_usdt:.2f}`\n" if pm["crypto"] else ""
 
     text = (
         f"📋 *جزئیات پلن:*\n\n"
         f"🏷 نام: `{plan.name}`\n"
         f"📦 ترافیک: `{traffic_text}`\n"
         f"⏱ مدت: `{plan.duration_days} روز`\n"
-        f"💰 قیمت: `{f'{price_toman:,} تومان (${plan.price_usdt:.2f})' if price_toman else f'${plan.price_usdt:.2f}'}`\n"
-        f"👤 محدودیت دستگاه: `{device_text}`\n"
-        f"🔌 اینباندهای مجاز: `{inbound_text}`\n\n"
-        f"برای خرید این پلن روی دکمه زیر کلیک کنید:"
+        + card_line
+        + crypto_line
+        + f"👤 محدودیت دستگاه: `{device_text}`\n"
+        + f"🔌 اینباندهای مجاز: `{inbound_text}`\n\n"
+        + f"برای خرید این پلن روی دکمه زیر کلیک کنید:"
     )
 
     await _safe_edit(
         callback,
         text,
         parse_mode="Markdown",
-        reply_markup=get_plan_detail_keyboard(plan_id, wallet_balance_usdt=wallet_usdt),
+        reply_markup=get_plan_confirm_keyboard(
+            plan_id,
+            crypto_on=pm["crypto"],
+            card_on=pm["card"],
+            crypto_invoice=pm.get("crypto_invoice", False),
+            crypto_gateway=pm.get("crypto_gateway", "nowpayments"),
+            amount=float(plan.price_usdt),
+            amount_toman=price_toman,
+            plan_name=plan.name,
+            wallet_balance_usdt=wallet_usdt,
+            wallet_balance_toman=wallet_toman,
+        ),
     )
 
 
@@ -396,6 +457,12 @@ async def cb_buy_plan(callback: CallbackQuery) -> None:
     from config import settings as _s
     price = _s.plan_price_usdt
     traffic_text = "نامحدود" if _s.default_traffic_gb == 0 else f"{_s.default_traffic_gb} GB"
+    try:
+        card = await get_card_info()
+        rate = int(card.get("rate", 0) or 0)
+    except Exception:
+        rate = 0
+    price_toman = toman_from_usdt(price, rate) if rate > 0 else 0
 
     text = (
         "💳 *تأیید خرید*\n\n"
@@ -410,7 +477,12 @@ async def cb_buy_plan(callback: CallbackQuery) -> None:
         callback,
         text,
         parse_mode="Markdown",
-        reply_markup=get_confirm_purchase_keyboard(inbound_id),
+        reply_markup=get_plan_confirm_keyboard(
+            inbound_id,
+            amount=price,
+            amount_toman=price_toman,
+            plan_name=str(inbound_id),
+        ),
     )
 
 
@@ -450,8 +522,21 @@ async def menu_my_subscriptions(event: Message | CallbackQuery) -> None:
     if not tg_user:
         return
 
+    await _render_my_subscriptions(target_msg, tg_user.id)
+    if isinstance(event, CallbackQuery) and event.message:
+        try:
+            await event.message.delete()
+        except Exception:
+            pass
+
+
+async def _render_my_subscriptions(target_msg, telegram_id: int) -> None:
+    """رندر لیست اشتراک‌های کاربر بدون نیاز به callback جدید."""
+    if not telegram_id:
+        return
+
     async with AsyncSessionLocal() as session:
-        db_user = await get_user_by_telegram_id(session, tg_user.id)
+        db_user = await get_user_by_telegram_id(session, telegram_id)
         if not db_user:
             await target_msg.answer("❌ حساب شما پیدا نشد. لطفاً /start بزنید.")
             return
@@ -550,13 +635,13 @@ async def cb_sub_detail(callback: CallbackQuery) -> None:
     )
 
     b = InlineKeyboardBuilder()
-    b.button(text="🔗 دریافت مجدد لینک", callback_data=f"resend_link:{sub.id}")
     b.button(text="🔄 تغییر لینک", callback_data=f"rotate_link:{sub.id}")
     b.button(text="🔁 تمدید", callback_data=f"renew_sub:{sub.id}")
     b.button(text="🔄 تغییر پلن", callback_data=f"change_plan:{sub.id}")
     b.button(text="📋 کانفیگ‌های مستقل", callback_data=f"sub_configs:{sub.id}")
     b.button(text="🔙 بازگشت به لیست", callback_data="my_subs")
-    b.adjust(2, 2, 1, 1)
+    b.button(text="🗑 حذف اشتراک", callback_data=f"sub_delete_confirm:{sub.id}")
+    b.adjust(2, 2, 1, 1, 1)
 
     if qr_bytes:
         await callback.message.answer_photo(
@@ -646,6 +731,59 @@ async def cb_rotate_link(callback: CallbackQuery) -> None:
         await callback.message.answer(text, parse_mode="HTML")
 
 
+@router.callback_query(F.data.startswith("sub_delete_confirm:"))
+async def cb_sub_delete_confirm(callback: CallbackQuery) -> None:
+    await callback.answer()
+    sub_id = int(callback.data.split(":", 1)[1])
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ بله، حذف کن", callback_data=f"sub_delete:{sub_id}")
+    kb.button(text="❌ انصراف", callback_data=f"sub_detail:{sub_id}")
+    kb.adjust(1)
+
+    await _safe_edit(
+        callback,
+        "🗑 <b>حذف اشتراک</b>\n\n"
+        "آیا مطمئن هستید؟",
+        parse_mode="HTML",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("sub_delete:"))
+async def cb_sub_delete(callback: CallbackQuery) -> None:
+    await callback.answer("⏳ در حال حذف اشتراک...")
+    sub_id = int(callback.data.split(":", 1)[1])
+
+    async with AsyncSessionLocal() as session:
+        from database.models import Subscription
+
+        sub = await session.get(Subscription, sub_id)
+        if not sub:
+            await callback.answer("اشتراک پیدا نشد.", show_alert=True)
+            return
+
+        db_user = await get_user_by_telegram_id(session, callback.from_user.id) if callback.from_user else None
+        if not db_user or sub.user_id != db_user.id:
+            await callback.answer("🚫 دسترسی ندارید.", show_alert=True)
+            return
+
+        try:
+            await delete_subscription_completely(session, sub)
+        except Exception as exc:
+            logger.error(f"خطا در حذف اشتراک کاربر {sub_id}: {exc}")
+            await callback.answer("❌ حذف اشتراک ناموفق بود.", show_alert=True)
+            return
+
+    await _safe_edit(
+        callback,
+        "✅ اشتراک با موفقیت حذف شد.",
+        parse_mode="HTML",
+    )
+    await _render_my_subscriptions(callback.message, callback.from_user.id if callback.from_user else 0)  # type: ignore[arg-type]
+
+
 @router.callback_query(F.data.startswith("renew_sub:"))
 async def cb_renew_sub(callback: CallbackQuery) -> None:
     await callback.answer()
@@ -659,23 +797,30 @@ async def cb_renew_sub(callback: CallbackQuery) -> None:
         plan = await _resolve_subscription_plan(session, sub)
         db_user = await get_user_by_telegram_id(session, callback.from_user.id) if callback.from_user else None
         wallet_usdt = await wallet_balance(session, db_user.id) if db_user else 0.0
+        wallet_toman = await wallet_balance_toman(session, db_user.id) if db_user else 0
     if not plan:
-        await callback.message.answer(
+        await callback.answer(
             "این اشتراک هنوز پلن قابل تمدید ندارد. برای ادامه از گزینه «تغییر پلن» استفاده کنید.",
+            show_alert=True,
         )
         return
-    from config import settings as _s
     from keyboards.plans import get_plan_confirm_keyboard
+    pm = await get_payment_status()
+    plan_price_toman = await _plan_toman_price(plan)
+    card_line = f"💵 قیمت کارت: <code>{plan_price_toman:,} تومان</code>\n" if plan_price_toman > 0 else ""
+    crypto_line = f"💠 قیمت کریپتو: <code>${plan.price_usdt:.2f}</code>\n\n" if pm["crypto"] else "\n"
     plan_text = (
         f"🔁 <b>تمدید پلن</b>\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📦 پلن: <b>{plan.name}</b>\n"
         f"⏱ مدت: <code>{plan.duration_days} روز</code>\n"
-        f"💰 قیمت: <code>${plan.price_usdt:.2f}</code>\n\n"
+        f"{card_line}"
+        f"{crypto_line}"
         "پس از پرداخت، همین اشتراک تمدید می‌شود."
     )
     pm = await get_payment_status()
-    await callback.message.answer(
+    await _safe_edit(
+        callback,
         plan_text,
         parse_mode="HTML",
         reply_markup=get_plan_confirm_keyboard(
@@ -685,10 +830,12 @@ async def cb_renew_sub(callback: CallbackQuery) -> None:
             crypto_invoice=pm.get("crypto_invoice", False),
             crypto_gateway=pm.get("crypto_gateway", "nowpayments"),
             amount=float(plan.price_usdt),
+            amount_toman=plan_price_toman,
             plan_name=plan.name,
             flow="renew",
             target_sub_id=sub.id,
             wallet_balance_usdt=wallet_usdt,
+            wallet_balance_toman=wallet_toman,
         ),
     )
 
@@ -705,11 +852,12 @@ async def cb_change_plan(callback: CallbackQuery, state: FSMContext) -> None:
             return
         plans = await get_active_plans(session)
     if not plans:
-        await callback.message.answer("❌ فعلاً پلن فعالی وجود ندارد.")
+        await callback.answer("❌ فعلاً پلن فعالی وجود ندارد.", show_alert=True)
         return
     await state.set_state(SubscriptionActionStates.waiting_plan)
     await state.update_data(action="change", sub_id=sub.id)
-    await callback.message.answer(
+    await _safe_edit(
+        callback,
         "🔄 پلن جدید را انتخاب کنید:\n"
         "بعد از پرداخت، همین اشتراک با پلن جدید جایگزین می‌شود.",
         reply_markup=get_plans_keyboard(plans),
@@ -746,10 +894,6 @@ async def _send_subscription_configs(callback: CallbackQuery, sub_id: int) -> No
         return
 
     try:
-        from database.crud import get_enabled_inbound_ids
-        async with AsyncSessionLocal() as sess2:
-            enabled_ids = await get_enabled_inbound_ids(sess2)
-
         async with XUIClient(
             panel_url=settings.panel_url,
             username=settings.panel_username,
@@ -757,34 +901,24 @@ async def _send_subscription_configs(callback: CallbackQuery, sub_id: int) -> No
             api_path=settings.panel_api_path,
             sub_port=settings.sub_port,
         ) as xui:
-            all_links = await xui.get_client_links(sub.email)
-            if enabled_ids and all_links:
-                inbounds = await xui.get_inbounds()
-                enabled_ports = {ib.port for ib in inbounds if ib.id in enabled_ids}
-                links = [
-                    lnk for lnk in all_links
-                    if any(f":{p}" in lnk or f":{p}?" in lnk for p in enabled_ports)
-                ] or all_links
-            else:
-                links = all_links
+            links = await xui.get_client_links(sub.email)
+            if not links:
+                links = await xui.get_sub_links(sub.sub_id)
 
         if not links:
             await callback.answer("⚠️ کانفیگی یافت نشد.", show_alert=True)
             return
 
-        # همه کانفیگ‌ها در یک پیام — جدا با خط فاصله
-        lines = [f"📋 <b>کانفیگ‌های مستقل — {sub.email}</b> ({len(links)} سرور)\n"]
+        await callback.message.answer(  # type: ignore[union-attr]
+            f"📋 <b>کانفیگ‌های مستقل — {sub.email}</b> ({len(links)} سرور)",
+            parse_mode="HTML",
+        )
         for j, link in enumerate(links, 1):
             proto = link.split("://")[0].upper() if "://" in link else "سرور"
-            lines.append(f"<b>{j}. {proto}</b>\n<code>{link}</code>")
-
-        full_text = "\n\n".join(lines)
-
-        # تلگرام حداکثر ۴۰۹۶ کاراکتر — اگه بزرگه برش بزن
-        if len(full_text) > 4000:
-            full_text = full_text[:3950] + "\n\n<i>... ادامه در لینک ساب موجود است</i>"
-
-        await callback.message.answer(full_text, parse_mode="HTML")  # type: ignore[union-attr]
+            await callback.message.answer(  # type: ignore[union-attr]
+                f"<b>{j}. {proto}</b>\n<code>{link}</code>",
+                parse_mode="HTML",
+            )
 
     except Exception as e:
         logger.error(f"خطا در دریافت کانفیگ‌های {sub.email}: {e}")
@@ -807,41 +941,8 @@ async def menu_profile(message: Message) -> None:
         if not db_user:
             await message.answer("❌ حساب شما یافت نشد. لطفاً /start بزنید.")
             return
-
-        subs = await get_subscriptions_status(session, db_user.id)
-        balance = await wallet_balance(session, db_user.id)
-        rate = 0
-        try:
-            rate = (await get_card_info()).get("rate", 0) or 0
-        except Exception:
-            rate = 0
-    # نام و یوزرنیم را escape می‌کنیم تا کاراکترهای خاص HTML مشکل ایجاد نکنند
-    from html import escape
-    first_name = escape(tg_user.first_name or "-")
-    username   = escape(tg_user.username or "-")
-    balance_toman = int(balance * rate) if rate > 0 else 0
-
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-    kb = InlineKeyboardBuilder()
-    kb.button(text="💰 شارژ کیف پول", callback_data="wallet_topup")
-    kb.button(text="🔄 بروزرسانی", callback_data="profile_refresh")
-    kb.button(text="🔙 بازگشت", callback_data="back_main")
-    kb.adjust(2, 1)
-
-    balance_toman_line = f"  • <b>{balance_toman:,} تومان</b>\n" if balance_toman else ""
-    text = (
-        f"👤 <b>پروفایل شما</b>\n\n"
-        f"🆔 آی‌دی: <code>{tg_user.id}</code>\n"
-        f"👋 نام: {first_name}\n"
-        f"📝 نام کاربری: @{username}\n"
-        f"💼 موجودی کیف پول:\n"
-        f"  • <b>${balance:.2f}</b>\n"
-        f"{balance_toman_line}"
-        f"📦 اشتراک‌های فعال: {len(subs)}\n"
-        f"📅 تاریخ ثبت‌نام: {db_user.created_at.strftime('%Y-%m-%d')}"
-    )
-
-    await message.answer(text, parse_mode="HTML", reply_markup=kb.as_markup())
+    text, markup = await _build_profile_view(tg_user, db_user)
+    await message.answer(text, parse_mode="HTML", reply_markup=markup)
 
 
 def _wallet_topup_keyboard():
@@ -860,13 +961,20 @@ async def cb_profile_refresh(callback: CallbackQuery) -> None:
     tg_user = callback.from_user
     if not tg_user:
         return
-    await menu_profile(callback.message)  # type: ignore[arg-type]
+    async with AsyncSessionLocal() as session:
+        db_user = await get_user_by_telegram_id(session, tg_user.id)
+        if not db_user:
+            await callback.answer("❌ حساب شما یافت نشد.", show_alert=True)
+            return
+    text, markup = await _build_profile_view(tg_user, db_user)
+    await _safe_edit(callback, text, parse_mode="HTML", reply_markup=markup)
 
 
 @router.callback_query(F.data == "wallet_topup")
 async def cb_wallet_topup(callback: CallbackQuery) -> None:
     await callback.answer()
-    await callback.message.answer(
+    await _safe_edit(
+        callback,
         "💼 <b>شارژ کیف پول</b>\n\n"
         "یک روش پرداخت را انتخاب کنید:",
         parse_mode="HTML",
@@ -878,7 +986,8 @@ async def cb_wallet_topup(callback: CallbackQuery) -> None:
 async def cb_wallet_topup_crypto(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(WalletTopupStates.waiting_crypto_amount)
-    await callback.message.answer(
+    await _safe_edit(
+        callback,
         "💠 مبلغ شارژ را به <b>$</b> وارد کنید.\n"
         "حداقل مبلغ: <b>$5</b>",
         parse_mode="HTML",
@@ -889,7 +998,8 @@ async def cb_wallet_topup_crypto(callback: CallbackQuery, state: FSMContext) -> 
 async def cb_wallet_topup_toman(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(WalletTopupStates.waiting_toman_amount)
-    await callback.message.answer(
+    await _safe_edit(
+        callback,
         "💳 مبلغ شارژ را به <b>تومان</b> وارد کنید.\n"
         "بعد از پرداخت، کیف پول شما شارژ می‌شود.",
         parse_mode="HTML",
@@ -925,12 +1035,13 @@ async def msg_wallet_crypto_amount(message: Message, state: FSMContext) -> None:
         )
 
     if pm.get("crypto_gateway") == "maxelpay":
-        if not settings.maxelpay_api_key:
+        runtime = await get_maxelpay_config()
+        if not runtime["api_key"]:
             await message.answer("⚠️ درگاه MaxelPay فعال نیست. از روش تومان استفاده کنید.")
             return
         client = MaxelPayClient(
-            api_key=settings.maxelpay_api_key,
-            webhook_url=settings.maxelpay_webhook_callback_url(),
+            api_key=runtime["api_key"],
+            webhook_url=runtime["webhook_url"] or settings.maxelpay_webhook_callback_url(),
             success_url=f"https://t.me/{(getattr(settings,'bot_username','') or '').lstrip('@')}",
             cancel_url=f"https://t.me/{(getattr(settings,'bot_username','') or '').lstrip('@')}",
         )
@@ -1066,8 +1177,9 @@ async def msg_wallet_toman_amount(message: Message, state: FSMContext) -> None:
 
     await state.clear()
     order_id = f"wallet_card_{tg_user.id}_{uuid.uuid4().hex[:8]}"
-    amount_usdt = round(amount_toman / rate, 4)
-    rial, toman = calc_rial_amount(amount_usdt, rate)
+    amount_usdt = usdt_amount_from_toman(amount_toman, rate)
+    toman = amount_toman
+    rial = amount_toman * 10
     card_fmt = fmt_card_number(card["number"])
     holder = card["holder"] or "—"
 

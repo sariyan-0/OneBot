@@ -6,8 +6,8 @@ from __future__ import annotations
 
 from typing import List
 
-from aiogram.types import InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 from database.models import Ticket
 
@@ -34,9 +34,19 @@ def get_ticket_detail_keyboard(ticket_id: int, is_closed: bool = False) -> Inlin
     else:
         # تیکت بسته — کاربر می‌تواند دوباره باز کند
         builder.button(text="🔓 باز کردن مجدد", callback_data=f"ticket_reopen:{ticket_id}")
-    builder.button(text="🔙 بازگشت به لیست", callback_data="support_list")
-    builder.adjust(2 if not is_closed else 1)
+    builder.button(text="🚪 خروج از گفتگو", callback_data="ticket_exit")
+    builder.adjust(2, 1)
     return builder.as_markup()
+
+
+def get_ticket_mode_keyboard(is_closed: bool = False) -> ReplyKeyboardMarkup:
+    """کیبورد بزرگ پایین صفحه برای حالت گفتگوی تیکت."""
+    builder = ReplyKeyboardBuilder()
+    if not is_closed:
+        builder.row(KeyboardButton(text="🔒 بستن تیکت"), KeyboardButton(text="🚪 خروج از گفتگو"))
+    else:
+        builder.row(KeyboardButton(text="🔓 باز کردن تیکت"))
+    return builder.as_markup(resize_keyboard=True, one_time_keyboard=False, input_field_placeholder="یک گزینه انتخاب کنید...")
 
 
 def get_admin_ticket_keyboard(ticket_id: int, is_closed: bool = False) -> InlineKeyboardMarkup:

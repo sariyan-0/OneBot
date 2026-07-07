@@ -23,7 +23,7 @@ from loguru import logger
 
 from config import settings
 from database import AsyncSessionLocal
-from database.crud import get_or_create_user, get_subscription_by_email
+from database.crud import get_or_create_user, get_subscription_by_email, get_subscription_by_sub_id
 from database.models import Subscription
 from keyboards.main_menu import get_main_menu
 from services.xui_api import XUIClient, XUIError
@@ -65,6 +65,19 @@ def _extract_sub_id(text: str) -> str:
     return raw
 
 
+def _extract_email_candidate(text: str) -> str:
+    raw = text.strip()
+    if not raw:
+        return ""
+    if raw.startswith(("http://", "https://", "vless://", "vmess://")):
+        return ""
+    if "@" in raw:
+        return ""
+    if " " in raw:
+        return ""
+    return raw
+
+
 def _fmt_bytes(b: int) -> str:
     if b == 0:
         return "نامحدود"
@@ -77,6 +90,12 @@ def _fmt_ts(ts: int) -> str:
         return "نامحدود"
     dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
     return dt.strftime("%Y/%m/%d")
+
+
+def _display_identifier(client) -> str:
+    if client.raw.get("source") == "public_sub":
+        return client.sub_id
+    return client.email
 
 
 def _xui():
@@ -102,6 +121,7 @@ async def msg_uuid_entry(message: Message, state: FSMContext) -> None:
         "اگر قبلاً برای شما اشتراک ساخته شده، یکی از این‌ها را اینجا بفرستید:\n"
         "• UUID\n"
         "• لینک اشتراک\n"
+        "• ایمیل / شناسه اشتراک (مثل <code>client-4</code>)\n"
         "• لینک <code>vless://</code> یا <code>vmess://</code>\n\n"
         "مثال UUID: <code>a1b2c3d4-1234-5678-abcd-ef0123456789</code>\n"
         "مثال لینک: <code>https://example.com/sub/abc123</code>\n\n"
@@ -134,12 +154,13 @@ async def msg_receive_uuid(message: Message, state: FSMContext) -> None:
                 raw = uuid_candidate
 
     sub_id_candidate = _extract_sub_id(raw)
+    email_candidate = _extract_email_candidate(raw)
     if not _is_valid_uuid(raw) and not sub_id_candidate:
         await message.answer(
             "⚠️ فرمت UUID صحیح نیست.\n"
             "UUID باید ۳۶ کاراکتر با فرمت زیر باشد:\n"
             "<code>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</code>\n\n"
-            "یا یک لینک اشتراک معتبر بفرستید.\n\n"
+            "یا لینک اشتراک / ایمیل اشتراک را بفرستید.\n\n"
             "دوباره امتحان کنید یا /cancel بزنید.",
             parse_mode="HTML",
         )
@@ -156,17 +177,22 @@ async def msg_receive_uuid(message: Message, state: FSMContext) -> None:
             if _is_valid_uuid(uuid_str):
                 client = await xui.find_client_by_uuid(uuid_str)
             if not client and sub_id_candidate:
-                all_clients = await xui.get_all_clients()
-                for item in all_clients:
-                    if item.sub_id == sub_id_candidate:
-                        client = item
-                        break
+                client = await xui.find_client_by_sub_id(sub_id_candidate)
+            if not client and email_candidate:
+                client = await xui.get_client(email_candidate)
+                if not client:
+                    all_clients = await xui.get_all_clients()
+                    email_lower = email_candidate.lower()
+                    for item in all_clients:
+                        if item.email.lower() == email_lower:
+                            client = item
+                            break
 
         if not client:
             await wait_msg.edit_text(
                 "❌ <b>اشتراک پیدا نشد</b>\n\n"
-                "این UUID یا لینک اشتراک در پنل وجود ندارد یا غیرفعال است.\n"
-                "مطمئن شوید UUID یا لینک را درست وارد کرده‌اید.",
+                "این UUID، لینک یا ایمیل اشتراک در پنل پیدا نشد.\n"
+                "مطمئن شوید مقدار را درست وارد کرده‌اید.",
                 parse_mode="HTML",
             )
             return
@@ -181,6 +207,8 @@ async def msg_receive_uuid(message: Message, state: FSMContext) -> None:
 
             # بررسی اینکه این اشتراک قبلاً ثبت شده یا نه
             existing = await get_subscription_by_email(session, client.email)
+            if not existing and client.sub_id:
+                existing = await get_subscription_by_sub_id(session, client.sub_id)
             already_linked = existing is not None
 
             # اگر قبلاً ثبت نشده، ذخیره کن
@@ -194,10 +222,10 @@ async def msg_receive_uuid(message: Message, state: FSMContext) -> None:
                 sub = Subscription(
                     user_id=db_user.id,
                     email=client.email,
-                    client_uuid=uuid_str,
+                    client_uuid=(client.uuid or (uuid_str if _is_valid_uuid(uuid_str) else ""))[:36],
                     plan_id=None,
                     sub_id=client.sub_id,
-                    inbound_id=client.inbound_id,
+                    inbound_id=client.inbound_id or 0,
                     traffic_limit_gb=traffic_gb,
                     used_traffic_bytes=client.up + client.down,
                     expiry_date=expiry_dt,
@@ -205,7 +233,7 @@ async def msg_receive_uuid(message: Message, state: FSMContext) -> None:
                 )
                 session.add(sub)
                 await session.commit()
-                logger.info(f"اشتراک با UUID ثبت شد: {client.email} → user {tg_user.id}")
+                logger.info(f"اشتراک قدیمی ثبت شد: {client.sub_id or client.email} → user {tg_user.id}")
 
         # دریافت لینک‌های اتصال
         async with _xui() as xui:
@@ -228,7 +256,7 @@ async def msg_receive_uuid(message: Message, state: FSMContext) -> None:
     info_text = (
         f"✅ <b>اشتراک پیدا شد!</b>\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"📧 شناسه: <code>{client.email}</code>\n"
+        f"📧 شناسه: <code>{_display_identifier(client)}</code>\n"
         f"📦 ترافیک مصرفی: <code>{traffic_used}</code> از <code>{traffic_total}</code>\n"
         f"⏳ انقضا: <code>{expire_str}</code>\n"
         f"وضعیت: {status_icon}"

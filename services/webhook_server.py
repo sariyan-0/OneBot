@@ -29,17 +29,36 @@ from database import AsyncSessionLocal
 from database.crud import (
     get_payment_by_order_id,
     get_payment_by_payment_id,
+    get_setting,
     update_payment_status,
     get_or_create_user,
 )
 from services.subscription import create_new_subscription, apply_paid_plan_to_subscription
 from services.wallet import credit_wallet
+from services.payment_config import get_nowpayments_config, get_maxelpay_config
+from services.referral import grant_referral_commission_for_payment
 
 # ──────────────────────────────────────────────
 # وضعیت‌هایی که باعث فعال شدن اشتراک می‌شوند
 # طبق مستندات NOWPayments: فقط "finished"
 # ──────────────────────────────────────────────
 TRIGGER_STATUSES = {"finished"}
+
+
+async def _resolve_bot_token() -> str:
+    """
+    BOT_TOKEN را از admin_settings دیتابیس می‌خواند و اگر خالی بود،
+    از env / .env استفاده می‌کند.
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            token = (await get_setting(session, "BOT_TOKEN", "")).strip()
+            if token:
+                return token
+    except Exception as exc:
+        logger.debug(f"Webhook token lookup skipped: {exc}")
+
+    return settings.bot_token.strip()
 
 
 # ──────────────────────────────────────────────
@@ -58,7 +77,7 @@ def _sort_recursive(obj: Any) -> Any:
     return obj
 
 
-def _verify_signature(body_bytes: bytes, received_sig: str) -> bool:
+async def _verify_signature(body_bytes: bytes, received_sig: str) -> bool:
     """
     تأیید امضای IPN از NOWPayments.
 
@@ -69,7 +88,8 @@ def _verify_signature(body_bytes: bytes, received_sig: str) -> bool:
       4. HMAC-SHA512 با ipn_secret
       5. مقایسه با x-nowpayments-sig
     """
-    ipn_secret = settings.nowpayments_ipn_secret
+    runtime = await get_nowpayments_config()
+    ipn_secret = runtime["ipn_secret"]
     if not ipn_secret:
         logger.warning("IPN secret تنظیم نشده — signature check رد می‌شود (توسعه)")
         return True
@@ -115,7 +135,7 @@ async def handle_nowpayments_ipn(request: web.Request) -> web.Response:
     received_sig = request.headers.get("x-nowpayments-sig", "")
 
     # تأیید امضا
-    if not _verify_signature(body_bytes, received_sig):
+    if not await _verify_signature(body_bytes, received_sig):
         logger.warning("IPN signature نامعتبر — reject")
         return web.Response(status=400, text="Invalid signature")
 
@@ -185,9 +205,10 @@ async def _activate_subscription(payment: Any, order_id: str) -> None:
                 return
 
             if order_id.startswith("wallet_"):
-                credited = await credit_wallet(session, user.id, float(payment.amount_usdt))
+                credited = await credit_wallet(session, user.id, float(payment.amount_usdt), currency="usd")
                 await update_payment_status(session, payment.id, "confirmed")
                 result = None
+                await grant_referral_commission_for_payment(session, payment)
             elif order_id.startswith(("renew_", "change_")):
                 parts = order_id.split("_", 3)
                 action = parts[0]
@@ -200,6 +221,8 @@ async def _activate_subscription(payment: Any, order_id: str) -> None:
                     telegram_id=user.telegram_id,
                     action=action,
                 )
+                await update_payment_status(session, payment.id, "confirmed", result.subscription.id)
+                await grant_referral_commission_for_payment(session, payment)
             else:
                 result = await create_new_subscription(
                     session=session,
@@ -211,8 +234,14 @@ async def _activate_subscription(payment: Any, order_id: str) -> None:
                 await update_payment_status(
                     session, payment.id, "confirmed", result.subscription.id
                 )
+                await grant_referral_commission_for_payment(session, payment)
 
-        bot = ActivityLoggingBot(token=settings.bot_token)
+        bot_token = await _resolve_bot_token()
+        if not bot_token:
+            logger.warning("BOT_TOKEN تنظیم نشده — ارسال پیام webhook به کاربر انجام نشد.")
+            return
+
+        bot = ActivityLoggingBot(token=bot_token)
         try:
             if order_id.startswith("wallet_"):
                 text = (
@@ -220,7 +249,7 @@ async def _activate_subscription(payment: Any, order_id: str) -> None:
                     "━━━━━━━━━━━━━━━\n"
                     f"🔖 سفارش: <code>{order_id}</code>\n"
                     f"💰 مبلغ افزوده‌شده: <b>{float(payment.amount_usdt):.2f} دلار</b>\n"
-                    f"💳 موجودی جدید: <b>{credited:.2f} دلار</b>"
+                    f"💳 موجودی جدید: <b>{float(credited):.2f} دلار</b>"
                 )
             else:
                 text = (
@@ -284,7 +313,8 @@ async def handle_maxelpay_webhook(request: web.Request) -> web.Response:
     # ── Signature verification ────────────────────────────────
     from services.maxelpay import MaxelPayClient, verify_maxelpay_signature
     received_sig = request.headers.get("X-MaxelPay-Signature", "")
-    webhook_secret = getattr(settings, "maxelpay_webhook_secret", "") or ""
+    runtime = await get_maxelpay_config()
+    webhook_secret = runtime["webhook_secret"] or ""
 
     if webhook_secret and not verify_maxelpay_signature(body_bytes, received_sig, webhook_secret):
         logger.warning("MaxelPay webhook: invalid signature — rejected")
