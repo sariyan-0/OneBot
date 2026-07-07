@@ -513,6 +513,13 @@ _install_nodejs() {
 
 _write_web_service() {
   local unit_file="/etc/systemd/system/onebot-web.service"
+  local standalone_server="$INSTALL_DIR/web-panel/.next/standalone/server.js"
+  local exec_start
+  if [[ -f "$standalone_server" ]]; then
+    exec_start="$(command -v node) $standalone_server"
+  else
+    exec_start="$(command -v npm) run start"
+  fi
   cat > "$unit_file" <<EOF
 [Unit]
 Description=ONEBOT Next.js Admin Panel
@@ -524,8 +531,11 @@ Type=simple
 WorkingDirectory=$INSTALL_DIR/web-panel
 Environment=NODE_ENV=production
 Environment=ONEBOT_ROOT=$INSTALL_DIR
+Environment=PORT=3000
+Environment=HOST=127.0.0.1
+Environment=HOSTNAME=127.0.0.1
 EnvironmentFile=$INSTALL_DIR/.env
-ExecStart=$(command -v npm) run start
+ExecStart=$exec_start
 Restart=always
 RestartSec=5
 
@@ -534,6 +544,20 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable onebot-web.service >/dev/null 2>&1 || true
+}
+
+_sync_web_panel_assets() {
+  local standalone_dir="$INSTALL_DIR/web-panel/.next/standalone"
+  if [[ -d "$standalone_dir" ]]; then
+    mkdir -p "$standalone_dir/.next"
+    rm -rf "$standalone_dir/.next/static" "$standalone_dir/public" 2>/dev/null || true
+    if [[ -d "$INSTALL_DIR/web-panel/.next/static" ]]; then
+      cp -a "$INSTALL_DIR/web-panel/.next/static" "$standalone_dir/.next/" 2>/dev/null || true
+    fi
+    if [[ -d "$INSTALL_DIR/web-panel/public" ]]; then
+      cp -a "$INSTALL_DIR/web-panel/public" "$standalone_dir/" 2>/dev/null || true
+    fi
+  fi
 }
 
 _start_web_panel() {
@@ -550,6 +574,7 @@ _start_web_panel() {
     npm install --no-fund --no-audit
   fi
   npm run build
+  _sync_web_panel_assets
   _write_web_service
   systemctl restart onebot-web.service 2>/dev/null || systemctl start onebot-web.service
   _ok "Web panel started on http://127.0.0.1:3000"
