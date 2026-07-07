@@ -1,6 +1,6 @@
 const crypto = require("crypto");
 
-const { getSetting } = require("./db");
+const { getSetting, setSetting } = require("./db");
 
 const COOKIE_NAME = "onebot_admin";
 const COOKIE_FALLBACK_NAME = "onebot_admin_public";
@@ -11,16 +11,27 @@ async function getAuthConfig() {
     getSetting("WEB_ADMIN_PASSWORD", ""),
     getSetting("WEB_ADMIN_COOKIE_SECRET", ""),
   ]);
-  return {
-    username: String(dbUsername || process.env.WEB_ADMIN_USERNAME || "admin").trim(),
-    password: String(dbPassword || process.env.WEB_ADMIN_PASSWORD || "admin").trim(),
-    cookieSecret: String(
-      dbSecret ||
+  let cookieSecret = String(dbSecret || "").trim();
+  if (!cookieSecret) {
+    cookieSecret = String(
       process.env.WEB_ADMIN_COOKIE_SECRET ||
       process.env.ADMIN_SECRET ||
       process.env.BOT_TOKEN ||
-      "onebot-web-admin"
-    ).trim(),
+      ""
+    ).trim();
+    if (!cookieSecret) {
+      cookieSecret = crypto.randomBytes(32).toString("hex");
+    }
+    try {
+      await setSetting("WEB_ADMIN_COOKIE_SECRET", cookieSecret);
+    } catch {
+      // Best-effort persistence; the generated secret still works for this process.
+    }
+  }
+  return {
+    username: String(dbUsername || process.env.WEB_ADMIN_USERNAME || "admin").trim(),
+    password: String(dbPassword || process.env.WEB_ADMIN_PASSWORD || "admin").trim(),
+    cookieSecret,
   };
 }
 
