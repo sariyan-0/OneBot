@@ -6,6 +6,8 @@ import { getRootDir } from "../../../../lib/root";
 import { redirectSeeOther } from "../../../../lib/redirect";
 import { setSetting, sqlitePath } from "../../../../lib/db";
 
+export const runtime = "nodejs";
+
 const RESTORE_PATHS = new Map([
   [".env", ".env"],
   ["bot_data.db", "bot_data.db"],

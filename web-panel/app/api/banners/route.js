@@ -4,6 +4,8 @@ import path from "path";
 import { getSetting, setSetting } from "../../../lib/db";
 import { redirectSeeOther } from "../../../lib/redirect";
 
+export const runtime = "nodejs";
+
 const UPLOAD_DIR = path.join(process.cwd(), "public", "banners");
 
 function adminChatId() {
