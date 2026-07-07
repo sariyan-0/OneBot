@@ -7,8 +7,26 @@ import { exec, many, one, getSetting } from "../../../../lib/db";
 import { redirectSeeOther } from "../../../../lib/redirect";
 
 async function getAdminSenderId() {
-  const row = await one("SELECT id FROM users WHERE is_admin = 1 ORDER BY id ASC LIMIT 1");
-  return row?.id || null;
+  const existingAdmin = await one("SELECT id FROM users WHERE is_admin = 1 ORDER BY id ASC LIMIT 1");
+  if (existingAdmin?.id) {
+    return existingAdmin.id;
+  }
+
+  const fallbackAdmin = await one("SELECT id, is_admin FROM users WHERE telegram_id = 0 ORDER BY id ASC LIMIT 1");
+  if (fallbackAdmin?.id) {
+    if (!fallbackAdmin.is_admin) {
+      await exec("UPDATE users SET is_admin = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [fallbackAdmin.id]);
+    }
+    return fallbackAdmin.id;
+  }
+
+  const supportUsername = String((await getSetting("WEB_ADMIN_USERNAME", "")) || "support").trim() || "support";
+  await exec(
+    "INSERT INTO users(telegram_id, username, first_name, is_admin, created_at, updated_at) VALUES(0, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    [supportUsername, "Support"]
+  );
+  const createdAdmin = await one("SELECT id FROM users WHERE telegram_id = 0 ORDER BY id DESC LIMIT 1");
+  return createdAdmin?.id || null;
 }
 
 async function sendTelegramMessage(chatId, text) {

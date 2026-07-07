@@ -375,18 +375,17 @@ async def _start_node_web_panel() -> asyncio.subprocess.Process | None:
         logger.warning("Web panel port 3000 is unavailable and could not be recovered.")
         return None
 
+    dev_mode_flag = os.environ.get("ONEBOT_WEB_PANEL_DEV", "").strip().lower()
+    use_dev_mode = os.name == "nt" and dev_mode_flag != "0"
     node_env = {
         **os.environ,
-        "NODE_ENV": "production",
+        "NODE_ENV": "development" if use_dev_mode else "production",
         "PORT": str(panel_port),
         "HOST": bind_host,
         "HOSTNAME": bind_host,
         "ONEBOT_DATA_DIR": str((Path(__file__).resolve().parent / "data").resolve()),
         "ONEBOT_ROOT": root_dir,
     }
-
-    dev_mode_flag = os.environ.get("ONEBOT_WEB_PANEL_DEV", "").strip().lower()
-    use_dev_mode = os.name == "nt" and dev_mode_flag != "0"
     if use_dev_mode:
         logger.info(f"Starting Node web panel in dev mode for Windows: {panel_dir} (port {panel_port})")
         proc = await asyncio.create_subprocess_exec(
