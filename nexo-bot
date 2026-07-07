@@ -61,6 +61,50 @@ _info()   { echo -e "  ${CYAN}ℹ${RESET}  $*"; }
 _press()  { echo -e "\n${DIM}  Press Enter to continue...${RESET}"; read -r; }
 _rand_secret() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c "${1:-16}"; }
 
+_ensure_swap_space() {
+  local mem_kb swap_kb swap_path="/swapfile" swap_size_mb=1024
+
+  if [[ ! -r /proc/meminfo ]]; then
+    return 0
+  fi
+
+  mem_kb="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  swap_kb="$(awk '/SwapTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+
+  if (( swap_kb >= 524288 )); then
+    return 0
+  fi
+
+  if [[ -e "$swap_path" ]] && swapon --show=NAME --noheadings 2>/dev/null | awk '{print $1}' | grep -Fxq "$swap_path"; then
+    return 0
+  fi
+
+  if ! command -v swapon &>/dev/null || ! command -v mkswap &>/dev/null; then
+    _warn "Swap tools are missing; continuing without extra swap."
+    return 0
+  fi
+
+  if (( mem_kb < 1200000 )); then
+    swap_size_mb=2048
+  fi
+
+  _info "Creating ${swap_size_mb}MiB swap space to keep npm installs from being OOM-killed..."
+
+  if ! fallocate -l "${swap_size_mb}M" "$swap_path" 2>/dev/null; then
+    dd if=/dev/zero of="$swap_path" bs=1M count="$swap_size_mb" status=none
+  fi
+
+  chmod 600 "$swap_path"
+  mkswap "$swap_path" >/dev/null
+  swapon "$swap_path"
+
+  if ! grep -qE "^[[:space:]]*${swap_path}[[:space:]]+none[[:space:]]+swap[[:space:]]" /etc/fstab 2>/dev/null; then
+    printf '%s none swap sw 0 0\n' "$swap_path" >> /etc/fstab
+  fi
+
+  _ok "Swap ready at $swap_path"
+}
+
 _require_compose() {
   if [[ ! -f "$COMPOSE_FILE" ]]; then
     _err "docker-compose.yml not found in: $BOT_DIR"; _press; return 1
@@ -180,15 +224,27 @@ _ensure_web_panel_dependencies() {
   local npm_env=(env
     NPM_CONFIG_PROGRESS=false
     NPM_CONFIG_LOGLEVEL=warn
+    npm_config_jobs=1
     npm_config_platform=linux
     npm_config_arch="$npm_arch"
     npm_config_libc=glibc
   )
 
   if [[ -f package-lock.json ]]; then
-    "${npm_env[@]}" npm ci --omit=dev --prefer-offline --no-fund --no-audit
+    if ! "${npm_env[@]}" npm ci --omit=dev --prefer-offline --no-fund --no-audit; then
+      _err "Web panel dependency install failed."
+      return 1
+    fi
   else
-    "${npm_env[@]}" npm install --omit=dev --prefer-offline --no-fund --no-audit
+    if ! "${npm_env[@]}" npm install --omit=dev --prefer-offline --no-fund --no-audit; then
+      _err "Web panel dependency install failed."
+      return 1
+    fi
+  fi
+
+  if [[ ! -x node_modules/.bin/next ]]; then
+    _err "Web panel dependencies are incomplete; next was not installed."
+    return 1
   fi
 
   mkdir -p node_modules
@@ -799,6 +855,7 @@ _menu_update() {
     if [[ -d "$BOT_DIR/web-panel" ]]; then
       _info "Rebuilding web panel..."
       cd "$BOT_DIR/web-panel"
+      _ensure_swap_space
       _ensure_web_panel_dependencies
       npm run build
       _refresh_web_service
