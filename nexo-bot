@@ -189,6 +189,7 @@ Type=simple
 WorkingDirectory=$BOT_DIR/web-panel
 Environment=NODE_ENV=production
 Environment=ONEBOT_ROOT=$BOT_DIR
+Environment=ONEBOT_DATA_DIR=$BOT_DIR/data
 Environment=PORT=3000
 Environment=HOST=127.0.0.1
 Environment=HOSTNAME=127.0.0.1

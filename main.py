@@ -381,6 +381,7 @@ async def _start_node_web_panel() -> asyncio.subprocess.Process | None:
         "PORT": str(panel_port),
         "HOST": bind_host,
         "HOSTNAME": bind_host,
+        "ONEBOT_DATA_DIR": str((Path(__file__).resolve().parent / "data").resolve()),
         "ONEBOT_ROOT": root_dir,
     }
 

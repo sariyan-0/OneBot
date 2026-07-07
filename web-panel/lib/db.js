@@ -13,6 +13,14 @@ function dbUrl() {
   return process.env.DB_URL || "sqlite+aiosqlite:///./bot_data.db";
 }
 
+function sharedDataDir() {
+  const configured = String(process.env.ONEBOT_DATA_DIR || "").trim();
+  if (configured) {
+    return path.resolve(configured);
+  }
+  return path.resolve(getRootDir(), "data");
+}
+
 function isPostgres() {
   return /^postgres(ql)?:\/\//i.test(dbUrl());
 }
@@ -22,8 +30,17 @@ function sqlitePath() {
   const raw = dbUrl()
     .replace("sqlite+aiosqlite:///", "")
     .replace("sqlite:///", "");
-  const p = path.isAbsolute(raw) ? raw : path.resolve(getRootDir(), raw);
-  return p;
+  const dataDir = sharedDataDir();
+  if (!raw || raw === "./bot_data.db" || raw === "bot_data.db") {
+    return path.join(dataDir, "bot_data.db");
+  }
+  if (path.isAbsolute(raw)) {
+    if (path.basename(raw) === "bot_data.db") {
+      return path.join(dataDir, "bot_data.db");
+    }
+    return raw;
+  }
+  return path.resolve(dataDir, raw);
 }
 
 function getSqlite() {

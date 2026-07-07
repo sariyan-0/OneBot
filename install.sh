@@ -608,6 +608,7 @@ Type=simple
 WorkingDirectory=$INSTALL_DIR/web-panel
 Environment=NODE_ENV=production
 Environment=ONEBOT_ROOT=$INSTALL_DIR
+Environment=ONEBOT_DATA_DIR=$INSTALL_DIR/data
 Environment=PORT=3000
 Environment=HOST=127.0.0.1
 Environment=HOSTNAME=127.0.0.1
@@ -1190,6 +1191,7 @@ SUB_PORT=${SUB_PORT}
 
 # Database
 DB_URL=${DB_URL}
+ONEBOT_DATA_DIR=${INSTALL_DIR}/data
 EOF
 
 if [[ "$USE_POSTGRES" == "true" ]]; then
