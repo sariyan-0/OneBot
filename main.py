@@ -377,6 +377,7 @@ async def _start_node_web_panel() -> asyncio.subprocess.Process | None:
 
     node_env = {
         **os.environ,
+        "NODE_ENV": "production",
         "PORT": str(panel_port),
         "HOST": bind_host,
         "HOSTNAME": bind_host,
