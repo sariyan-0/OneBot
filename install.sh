@@ -560,6 +560,35 @@ _sync_web_panel_assets() {
   fi
 }
 
+_web_panel_deps_stamp() {
+  local lock_file="$INSTALL_DIR/web-panel/package-lock.json"
+  local pkg_file="$INSTALL_DIR/web-panel/package.json"
+  if [[ -f "$lock_file" ]] && [[ -f "$pkg_file" ]] && command -v sha256sum &>/dev/null; then
+    sha256sum "$lock_file" "$pkg_file" | sha256sum | awk '{print $1}'
+    return 0
+  fi
+  date +%s
+}
+
+_ensure_web_panel_dependencies() {
+  local deps_stamp
+  deps_stamp="$(_web_panel_deps_stamp)"
+  local stamp_file="$INSTALL_DIR/web-panel/node_modules/.onebot-web-deps.stamp"
+
+  if [[ -f "$stamp_file" ]] && [[ "$(<"$stamp_file")" == "$deps_stamp" ]]; then
+    return 0
+  fi
+
+  if [[ -f package-lock.json ]]; then
+    npm ci --prefer-offline --no-fund --no-audit
+  else
+    npm install --prefer-offline --no-fund --no-audit
+  fi
+
+  mkdir -p node_modules
+  printf '%s\n' "$deps_stamp" > "$stamp_file"
+}
+
 _start_web_panel() {
   _step "Installing Node web panel..."
   _install_nodejs || { _warn "Node.js installation failed; web panel was not started."; return 1; }
@@ -568,11 +597,7 @@ _start_web_panel() {
   chown -R 1001:1001 "$INSTALL_DIR/data" "$INSTALL_DIR/logs" 2>/dev/null || true
 
   cd "$INSTALL_DIR/web-panel"
-  if [[ -f package-lock.json ]]; then
-    npm ci --no-fund --no-audit
-  else
-    npm install --no-fund --no-audit
-  fi
+  _ensure_web_panel_dependencies
   npm run build
   _sync_web_panel_assets
   _write_web_service

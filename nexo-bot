@@ -147,6 +147,35 @@ EOF
   fi
 }
 
+_web_panel_deps_stamp() {
+  local lock_file="$BOT_DIR/web-panel/package-lock.json"
+  local pkg_file="$BOT_DIR/web-panel/package.json"
+  if [[ -f "$lock_file" ]] && [[ -f "$pkg_file" ]] && command -v sha256sum &>/dev/null; then
+    sha256sum "$lock_file" "$pkg_file" | sha256sum | awk '{print $1}'
+    return 0
+  fi
+  date +%s
+}
+
+_ensure_web_panel_dependencies() {
+  local deps_stamp
+  deps_stamp="$(_web_panel_deps_stamp)"
+  local stamp_file="$BOT_DIR/web-panel/node_modules/.onebot-web-deps.stamp"
+
+  if [[ -f "$stamp_file" ]] && [[ "$(<"$stamp_file")" == "$deps_stamp" ]]; then
+    return 0
+  fi
+
+  if [[ -f package-lock.json ]]; then
+    npm ci --prefer-offline --no-fund --no-audit
+  else
+    npm install --prefer-offline --no-fund --no-audit
+  fi
+
+  mkdir -p node_modules
+  printf '%s\n' "$deps_stamp" > "$stamp_file"
+}
+
 # ════════════════════════════════════════════════════════════
 #  [1] Bot Control
 # ════════════════════════════════════════════════════════════
@@ -751,11 +780,7 @@ _menu_update() {
     if [[ -d "$BOT_DIR/web-panel" ]]; then
       _info "Rebuilding web panel..."
       cd "$BOT_DIR/web-panel"
-      if [[ -f package-lock.json ]]; then
-        npm ci --no-fund --no-audit
-      else
-        npm install --no-fund --no-audit
-      fi
+      _ensure_web_panel_dependencies
       npm run build
       _refresh_web_service
       systemctl restart onebot-web.service 2>/dev/null || true
