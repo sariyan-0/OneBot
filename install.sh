@@ -402,8 +402,26 @@ server {
         proxy_set_header   X-Real-IP \$remote_addr;
         proxy_read_timeout 15s;
     }
+    location ^~ /_next/ {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 30s;
+    }
+    location ^~ /login {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 30s;
+    }
     location ^~ /admin {
-        proxy_pass         http://127.0.0.1:${wh_port};
+        proxy_pass         http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Real-IP \$remote_addr;
@@ -411,20 +429,35 @@ server {
         proxy_set_header   X-Forwarded-Proto \$scheme;
         proxy_read_timeout 15s;
     }
+    location ^~ /api/ {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 30s;
+    }
     location /health {
-        proxy_pass http://127.0.0.1:${wh_port}/health;
+        proxy_pass http://127.0.0.1:3000/api/health;
+        proxy_set_header Host \$host;
     }
     location = /favicon.ico {
         return 204;
     }
     location / {
-        return 302 /admin/login;
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
     }
 }
 NGINXCONF
   nginx -t >/dev/null 2>&1 || return 1
   systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || true
-  _ok "nginx reverse proxy configured for https://${domain}/admin and /webhook/"
+  _ok "nginx reverse proxy configured for https://${domain}/ and /webhook/"
 }
 
 _obtain_ssl_certificate() {
@@ -445,6 +478,81 @@ _obtain_ssl_certificate() {
   cat /tmp/onebot-certbot.log 2>/dev/null || true
   _err "certbot failed for ${domain}"
   return 1
+}
+
+_install_nodejs() {
+  _info "Checking Node.js..."
+  if command -v node &>/dev/null && command -v npm &>/dev/null; then
+    _ok "Node.js already installed: $(node -v 2>/dev/null || echo unknown)"
+    return 0
+  fi
+
+  case "$PKG_MANAGER" in
+    apt)
+      _info "Installing Node.js via apt..."
+      _wait_for_apt 300 || return 1
+      _retry 3 10 apt-get -o Dpkg::Lock::Timeout=120 update -qq
+      _retry 3 10 apt-get -o Dpkg::Lock::Timeout=120 install -y -qq nodejs npm
+      ;;
+    dnf)
+      _info "Installing Node.js via dnf..."
+      _retry 3 10 dnf install -y nodejs npm
+      ;;
+    yum)
+      _info "Installing Node.js via yum..."
+      _retry 3 10 yum install -y nodejs npm
+      ;;
+    *)
+      _warn "Unknown package manager. Please install Node.js manually."
+      return 1
+      ;;
+  esac
+
+  command -v node &>/dev/null && command -v npm &>/dev/null
+}
+
+_write_web_service() {
+  local unit_file="/etc/systemd/system/onebot-web.service"
+  cat > "$unit_file" <<EOF
+[Unit]
+Description=ONEBOT Next.js Admin Panel
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$INSTALL_DIR/web-panel
+Environment=NODE_ENV=production
+Environment=ONEBOT_ROOT=$INSTALL_DIR
+EnvironmentFile=$INSTALL_DIR/.env
+ExecStart=$(command -v npm) run start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable onebot-web.service >/dev/null 2>&1 || true
+}
+
+_start_web_panel() {
+  _step "Installing Node web panel..."
+  _install_nodejs || { _warn "Node.js installation failed; web panel was not started."; return 1; }
+
+  mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs"
+  chown -R 1001:1001 "$INSTALL_DIR/data" "$INSTALL_DIR/logs" 2>/dev/null || true
+
+  cd "$INSTALL_DIR/web-panel"
+  if [[ -f package-lock.json ]]; then
+    npm ci --no-fund --no-audit
+  else
+    npm install --no-fund --no-audit
+  fi
+  npm run build
+  _write_web_service
+  systemctl restart onebot-web.service 2>/dev/null || systemctl start onebot-web.service
+  _ok "Web panel started on http://127.0.0.1:3000"
 }
 
 _banner
@@ -597,6 +705,8 @@ else
   _ok "Files already in $INSTALL_DIR"
 fi
 
+rm -rf "$INSTALL_DIR/web-panel/node_modules" "$INSTALL_DIR/web-panel/.next" "$INSTALL_DIR/web-panel/.turbo" 2>/dev/null || true
+
 cd "$INSTALL_DIR"
 export COMPOSE_PROJECT_NAME="onebot"
 
@@ -647,6 +757,9 @@ for v in "${OLD_VOLUMES[@]}"; do
 done
 
 _ok "Cleanup done."
+
+mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs"
+chown -R 1001:1001 "$INSTALL_DIR/data" "$INSTALL_DIR/logs" 2>/dev/null || true
 
 # ════════════════════════════════════════════════════════════
 #  STEP 4 — Configure .env
@@ -750,7 +863,7 @@ if [[ "$DB_CHOICE" == "1" ]]; then
   USE_POSTGRES=true
   _ok "Using PostgreSQL"
 else
-  DB_URL="sqlite+aiosqlite:////app/data/bot_data.db"
+  DB_URL="sqlite+aiosqlite:////data/bot_data.db"
   POSTGRES_PASSWORD=""
   _ok "Using SQLite"
 fi
@@ -887,7 +1000,7 @@ else
   _ok "MaxelPay skipped."
 fi
 
-WEB_ADMIN_ENABLED=true
+WEB_ADMIN_ENABLED=false
 WEB_ADMIN_USERNAME="admin"
 WEB_ADMIN_PASSWORD="admin"
 WEB_ADMIN_COOKIE_SECRET="$(_rand_secret 32)"
@@ -936,7 +1049,7 @@ echo "NOWPAYMENTS_API_KEY=${NOWPAYMENTS_API_KEY:-}" >> "$INSTALL_DIR/.env"
 echo "NOWPAYMENTS_IPN_SECRET=${NOWPAYMENTS_IPN_SECRET:-}" >> "$INSTALL_DIR/.env"
 echo "NOWPAYMENTS_IPN_URL=${NOWPAYMENTS_IPN_URL:-}" >> "$INSTALL_DIR/.env"
 echo "WEBHOOK_PORT=${WEBHOOK_PORT:-9988}" >> "$INSTALL_DIR/.env"
-echo "WEB_ADMIN_ENABLED=true" >> "$INSTALL_DIR/.env"
+echo "WEB_ADMIN_ENABLED=false" >> "$INSTALL_DIR/.env"
 echo "WEB_ADMIN_USERNAME=${WEB_ADMIN_USERNAME:-admin}" >> "$INSTALL_DIR/.env"
 echo "WEB_ADMIN_PASSWORD=${WEB_ADMIN_PASSWORD:-admin}" >> "$INSTALL_DIR/.env"
 echo "WEB_ADMIN_COOKIE_SECRET=${WEB_ADMIN_COOKIE_SECRET:-$(_rand_secret 32)}" >> "$INSTALL_DIR/.env"
@@ -997,6 +1110,8 @@ else
   _ok "Bot started (SQLite mode)."
 fi
 
+_start_web_panel || _warn "Web panel startup skipped."
+
 if [[ -n "$PUBLIC_DOMAIN" ]]; then
   echo ""
   _step "Configuring HTTPS reverse proxy"
@@ -1050,6 +1165,9 @@ echo "  ╚═══════════════════════
 echo -e "${RESET}"
 echo -e "  ${BOLD}Bot installed at:${RESET}  $INSTALL_DIR"
 echo -e "  ${BOLD}Manage with:${RESET}       ${CYAN}onebot${RESET}"
+if [[ -n "$PUBLIC_DOMAIN" ]]; then
+  echo -e "  ${BOLD}Web panel:${RESET}        ${CYAN}https://${PUBLIC_DOMAIN}/admin${RESET}"
+fi
 echo ""
 echo -e "  ${DIM}Next steps:${RESET}"
 echo -e "  1. Open Telegram and send a message to your bot"

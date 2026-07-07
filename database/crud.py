@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
     AdminSetting, DiscountCode, Payment, Plan, Referral,
-    Subscription, TestSubscriptionRecord, Ticket, TicketMessage, User,
+    ReferralCommission, Subscription, TestSubscriptionRecord, Ticket, TicketMessage, User,
 )
 
 
@@ -29,28 +29,57 @@ async def get_user_by_telegram_id(session: AsyncSession, telegram_id: int) -> Op
     return result.scalar_one_or_none()
 
 
-async def get_user_wallet_balance(session: AsyncSession, user_id: int) -> float:
-    """خواندن موجودی کیف پول کاربر."""
+async def get_user_wallet_balances(session: AsyncSession, user_id: int) -> tuple[float, int]:
+    """خواندن موجودی کیف پول کاربر به تفکیک دلار و تومان."""
     result = await session.execute(
-        select(User.wallet_balance_usdt).where(User.id == user_id)
+        select(User.wallet_balance_usdt, User.wallet_balance_toman).where(User.id == user_id)
     )
-    value = result.scalar_one_or_none()
-    return float(value or 0.0)
+    row = result.one_or_none()
+    if not row:
+        return 0.0, 0
+    return float(row[0] or 0.0), int(row[1] or 0)
+
+
+async def get_user_wallet_balance(session: AsyncSession, user_id: int) -> float:
+    """خواندن موجودی دلار کیف پول کاربر."""
+    usd, _ = await get_user_wallet_balances(session, user_id)
+    return usd
+
+
+async def get_user_wallet_balance_toman(session: AsyncSession, user_id: int) -> int:
+    """خواندن موجودی تومان کیف پول کاربر."""
+    _, toman = await get_user_wallet_balances(session, user_id)
+    return toman
 
 
 async def credit_user_wallet(
     session: AsyncSession,
     user_id: int,
-    amount_usdt: float,
+    amount: float,
+    currency: str = "usd",
 ) -> float:
     """افزایش موجودی کیف پول کاربر و برگرداندن موجودی جدید."""
-    if amount_usdt <= 0:
+    if amount <= 0:
         raise ValueError("wallet credit amount must be positive")
+    currency = str(currency or "usd").lower()
+    if currency not in {"usd", "toman"}:
+        raise ValueError("unsupported wallet currency")
+    if currency == "toman":
+        await session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(
+                wallet_balance_toman=User.wallet_balance_toman + int(round(amount)),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+        return float(await get_user_wallet_balance_toman(session, user_id))
     await session.execute(
         update(User)
         .where(User.id == user_id)
         .values(
-            wallet_balance_usdt=User.wallet_balance_usdt + amount_usdt,
+            wallet_balance_usdt=User.wallet_balance_usdt + amount,
             updated_at=datetime.now(timezone.utc),
         )
     )
@@ -61,17 +90,37 @@ async def credit_user_wallet(
 async def debit_user_wallet(
     session: AsyncSession,
     user_id: int,
-    amount_usdt: float,
+    amount: float,
+    currency: str = "usd",
 ) -> float:
     """کسر موجودی کیف پول کاربر و برگرداندن موجودی جدید."""
-    if amount_usdt <= 0:
+    if amount <= 0:
         raise ValueError("wallet debit amount must be positive")
+    currency = str(currency or "usd").lower()
+    if currency not in {"usd", "toman"}:
+        raise ValueError("unsupported wallet currency")
+
+    if currency == "toman":
+        amount_int = int(round(amount))
+        result = await session.execute(
+            update(User)
+            .where(User.id == user_id, User.wallet_balance_toman >= amount_int)
+            .values(
+                wallet_balance_toman=User.wallet_balance_toman - amount_int,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        if getattr(result, "rowcount", 0) == 0:
+            await session.rollback()
+            raise ValueError("insufficient wallet balance")
+        await session.commit()
+        return float(await get_user_wallet_balance_toman(session, user_id))
 
     result = await session.execute(
         update(User)
-        .where(User.id == user_id, User.wallet_balance_usdt >= amount_usdt)
+        .where(User.id == user_id, User.wallet_balance_usdt >= amount)
         .values(
-            wallet_balance_usdt=User.wallet_balance_usdt - amount_usdt,
+            wallet_balance_usdt=User.wallet_balance_usdt - amount,
             updated_at=datetime.now(timezone.utc),
         )
     )
@@ -85,16 +134,20 @@ async def debit_user_wallet(
 async def set_user_wallet_balance(
     session: AsyncSession,
     user_id: int,
-    amount_usdt: float,
+    amount: float,
+    currency: str = "usd",
 ) -> None:
     """تنظیم مستقیم موجودی کیف پول کاربر."""
+    currency = str(currency or "usd").lower()
+    if currency not in {"usd", "toman"}:
+        raise ValueError("unsupported wallet currency")
+    values = {"updated_at": datetime.now(timezone.utc)}
+    if currency == "toman":
+        values["wallet_balance_toman"] = max(int(round(amount)), 0)
+    else:
+        values["wallet_balance_usdt"] = max(amount, 0.0)
     await session.execute(
-        update(User)
-        .where(User.id == user_id)
-        .values(
-            wallet_balance_usdt=max(amount_usdt, 0.0),
-            updated_at=datetime.now(timezone.utc),
-        )
+        update(User).where(User.id == user_id).values(**values)
     )
     await session.commit()
 
@@ -227,6 +280,17 @@ async def get_subscription_by_email(
     """دریافت اشتراک بر اساس ایمیل."""
     result = await session.execute(
         select(Subscription).where(Subscription.email == email)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_subscription_by_sub_id(
+    session: AsyncSession,
+    sub_id: str,
+) -> Optional[Subscription]:
+    """دریافت اشتراک بر اساس sub_id."""
+    result = await session.execute(
+        select(Subscription).where(Subscription.sub_id == sub_id)
     )
     return result.scalar_one_or_none()
 
@@ -724,10 +788,22 @@ async def get_referral_stats(
         .where(Referral.referrer_id == user_id, Referral.reward_granted == True)
     )).scalar() or 0
 
+    total_commission_usdt = (await session.execute(
+        select(sql_func.sum(ReferralCommission.amount_usdt))
+        .where(ReferralCommission.referrer_id == user_id)
+    )).scalar() or 0
+
+    total_commission_toman = (await session.execute(
+        select(sql_func.sum(ReferralCommission.amount_toman))
+        .where(ReferralCommission.referrer_id == user_id)
+    )).scalar() or 0
+
     return {
         "total_referrals": total,
         "rewarded_referrals": rewarded,
         "total_reward_days": int(total_days),
+        "total_commission_usdt": float(total_commission_usdt or 0),
+        "total_commission_toman": int(total_commission_toman or 0),
     }
 
 
@@ -739,6 +815,49 @@ async def mark_referral_rewarded(
         update(Referral).where(Referral.id == referral_id).values(reward_granted=True)
     )
     await session.commit()
+
+
+async def get_referral_by_referred_id(
+    session: AsyncSession,
+    referred_id: int,
+) -> Optional[Referral]:
+    result = await session.execute(
+        select(Referral).where(Referral.referred_id == referred_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_referral_commission_by_payment_id(
+    session: AsyncSession,
+    payment_id: int,
+) -> Optional[ReferralCommission]:
+    result = await session.execute(
+        select(ReferralCommission).where(ReferralCommission.payment_id == payment_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def create_referral_commission(
+    session: AsyncSession,
+    referrer_id: int,
+    referred_id: int,
+    payment_id: int,
+    percent: float,
+    amount_usdt: float,
+    amount_toman: int,
+) -> ReferralCommission:
+    commission = ReferralCommission(
+        referrer_id=referrer_id,
+        referred_id=referred_id,
+        payment_id=payment_id,
+        percent=percent,
+        amount_usdt=amount_usdt,
+        amount_toman=amount_toman,
+    )
+    session.add(commission)
+    await session.commit()
+    await session.refresh(commission)
+    return commission
 
 
 # ──────────────────────────────────────────────

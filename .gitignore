@@ -17,6 +17,7 @@ bot_data.db
 
 # ── لاگ‌ها ────────────────────────────────────────────
 logs/
+data/
 *.log
 
 # ── Python cache ──────────────────────────────────────
@@ -52,3 +53,13 @@ desktop.ini
 # ── Backup files ──────────────────────────────────────
 *.bak
 *.pre_restore_*
+.onebot-main.lock
+.onebot-web-panel.pid
+CON
+
+# ── Node / Next panel ─────────────────────────────────
+node_modules/
+web-panel/node_modules/
+.next/
+web-panel/.next/
+web-panel/.turbo/

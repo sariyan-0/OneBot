@@ -14,6 +14,7 @@ import httpx
 from loguru import logger
 
 from config import settings
+from services.payment_config import get_nowpayments_config
 
 
 # ──────────────────────────────────────────────
@@ -119,15 +120,13 @@ class CryptoPaymentService:
     def __init__(self) -> None:
         self._api_key = settings.nowpayments_api_key
         self._sandbox = not bool(self._api_key)
-        if self._sandbox:
-            logger.warning("⚠️ NOWPayments API Key تنظیم نشده — حالت sandbox فعال است.")
 
     # ── headers ──────────────────────────────
 
-    @property
-    def _headers(self) -> Dict[str, str]:
+    @staticmethod
+    def _headers(api_key: str) -> Dict[str, str]:
         return {
-            "x-api-key": self._api_key or "sandbox",
+            "x-api-key": api_key or "sandbox",
             "Content-Type": "application/json",
         }
 
@@ -152,16 +151,20 @@ class CryptoPaymentService:
         Returns:
             InvoiceResult با آدرس والت و اطلاعات پرداخت
         """
-        if self._sandbox:
+        runtime = await get_nowpayments_config()
+        api_key = runtime["api_key"]
+        pay_currency = runtime["pay_currency"] or "usdttrc20"
+        ipn_url = runtime["ipn_url"] or settings.nowpayments_ipn_callback_url()
+        if not api_key:
             return self._make_sandbox_invoice(amount_usdt, order_id, expire_minutes)
 
         payload = {
             "price_amount": amount_usdt,
             "price_currency": "usd",
-            "pay_currency": settings.nowpayments_pay_currency,
+            "pay_currency": pay_currency,
             "order_id": order_id,
             "order_description": f"VPN Subscription - inbound {inbound_id}",
-            "ipn_callback_url": settings.nowpayments_ipn_callback_url(),
+            "ipn_callback_url": ipn_url,
             "success_url": "",
             "cancel_url": "",
         }
@@ -170,7 +173,7 @@ class CryptoPaymentService:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
                     f"{self.BASE_URL}/payment",
-                    headers=self._headers,
+                    headers=self._headers(api_key),
                     json=payload,
                 )
                 resp.raise_for_status()
@@ -186,7 +189,7 @@ class CryptoPaymentService:
             order_id=order_id,
             pay_address=data.get("pay_address", ""),
             pay_amount=float(data.get("pay_amount", amount_usdt)),
-            pay_currency=data.get("pay_currency", settings.nowpayments_pay_currency),
+            pay_currency=data.get("pay_currency", pay_currency),
             price_amount=amount_usdt,
             price_currency="usd",
             expiration_time=expiry,
@@ -215,7 +218,10 @@ class CryptoPaymentService:
         Returns:
             InvoicePageResult.invoice_url → لینک صفحه انتخاب ارز
         """
-        if self._sandbox:
+        runtime = await get_nowpayments_config()
+        api_key = runtime["api_key"]
+        ipn_url = runtime["ipn_url"] or settings.nowpayments_ipn_callback_url()
+        if not api_key:
             expiry = datetime.now(timezone.utc) + timedelta(minutes=expire_minutes)
             return InvoicePageResult(
                 invoice_id="sandbox_inv_" + uuid.uuid4().hex[:10],
@@ -231,7 +237,7 @@ class CryptoPaymentService:
             "price_currency": "usd",
             "order_id": order_id,
             "order_description": f"VPN Subscription",
-            "ipn_callback_url": settings.nowpayments_ipn_callback_url(),
+            "ipn_callback_url": ipn_url,
         }
         if success_url:
             payload["success_url"] = success_url
@@ -242,7 +248,7 @@ class CryptoPaymentService:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
                     f"{self.BASE_URL}/invoice",
-                    headers=self._headers,
+                    headers=self._headers(api_key),
                     json=payload,
                 )
                 resp.raise_for_status()
@@ -274,21 +280,24 @@ class CryptoPaymentService:
         Returns:
             PaymentStatus با وضعیت جدید
         """
-        if self._sandbox:
+        runtime = await get_nowpayments_config()
+        pay_currency = runtime["pay_currency"] or settings.nowpayments_pay_currency
+        api_key = runtime["api_key"]
+        if not api_key:
             return PaymentStatus(
                 payment_id=payment_id,
                 order_id="sandbox",
                 status="waiting",
                 pay_amount=1.0,
                 actually_paid=0.0,
-                pay_currency=settings.nowpayments_pay_currency,
+                pay_currency=pay_currency,
             )
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
                     f"{self.BASE_URL}/payment/{payment_id}",
-                    headers=self._headers,
+                    headers=self._headers(api_key),
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -324,7 +333,8 @@ class CryptoPaymentService:
         import hmac
         import json
 
-        ipn_secret = settings.nowpayments_ipn_secret
+        runtime = await get_nowpayments_config()
+        ipn_secret = runtime["ipn_secret"]
         if not ipn_secret:
             logger.warning("IPN secret key تنظیم نشده — تأیید signature رد می‌شود.")
             return True  # در حالت توسعه قبول می‌کنیم

@@ -116,6 +116,44 @@ def _ensure_aware_dt(value: datetime | None) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+async def _resolve_usable_inbound_ids(
+    xui: XUIClient,
+    requested_inbound_ids: list[int],
+) -> list[int]:
+    """
+    Resolve inbound ids conservatively.
+
+    If the panel exposes inbound listing endpoints, keep only enabled inbounds.
+    If this panel build does not expose those endpoints, fall back to the
+    requested ids directly so purchase flows can still proceed.
+    """
+    requested = [int(i) for i in requested_inbound_ids if int(i) > 0]
+    if not requested:
+        requested = [1]
+
+    try:
+        all_inbounds = await xui.get_inbounds()
+    except XUIError as exc:
+        logger.warning(
+            f"دریافت لیست اینباندهای پنل ناموفق بود؛ از اینباندهای تنظیم‌شده استفاده می‌کنیم: {exc}"
+        )
+        return requested
+
+    enabled_inbound_ids = [ib.id for ib in all_inbounds if ib.enable]
+    if not enabled_inbound_ids:
+        logger.warning("هیچ اینباند فعالی از API پنل برنگشت؛ از اینباندهای تنظیم‌شده استفاده می‌کنیم.")
+        return requested
+
+    valid_target_ids = [iid for iid in requested if iid in enabled_inbound_ids]
+    if valid_target_ids:
+        return valid_target_ids
+
+    logger.warning(
+        f"اینباندهای درخواستی {requested} در لیست فعال پنل نبودند؛ از اولین اینباند فعال {enabled_inbound_ids[0]} استفاده می‌کنیم."
+    )
+    return [enabled_inbound_ids[0]]
+
+
 async def _create_subscription_on_panel(
     session: AsyncSession,
     xui: XUIClient,
@@ -145,14 +183,7 @@ async def _create_subscription_on_panel(
     if sub_id is None:
         sub_id = uuid.uuid4().hex[:16]
 
-    all_inbounds = await xui.get_inbounds()
-    enabled_inbound_ids = [ib.id for ib in all_inbounds if ib.enable]
-    valid_target_ids = [iid for iid in target_inbound_ids if iid in enabled_inbound_ids]
-    if not valid_target_ids:
-        if not enabled_inbound_ids:
-            raise XUIError("هیچ اینباند فعالی در پنل پیدا نشد.")
-        valid_target_ids = [enabled_inbound_ids[0]]
-    target_inbound_ids = valid_target_ids
+    target_inbound_ids = await _resolve_usable_inbound_ids(xui, target_inbound_ids)
 
     first_inbound_id = target_inbound_ids[0]
     client_info = None
@@ -336,14 +367,7 @@ async def rotate_subscription_link(
         if not target_inbound_ids:
             target_inbound_ids = [sub.inbound_id]
 
-        all_inbounds = await xui.get_inbounds()
-        enabled_inbound_ids = [ib.id for ib in all_inbounds if ib.enable]
-        valid_target_ids = [iid for iid in target_inbound_ids if iid in enabled_inbound_ids]
-        if not valid_target_ids:
-            if not enabled_inbound_ids:
-                raise XUIError("هیچ اینباند فعالی در پنل پیدا نشد.")
-            valid_target_ids = [enabled_inbound_ids[0]]
-        target_inbound_ids = valid_target_ids
+        target_inbound_ids = await _resolve_usable_inbound_ids(xui, target_inbound_ids)
 
         new_sub_id = uuid.uuid4().hex[:16]
         try:
@@ -459,14 +483,7 @@ async def apply_paid_plan_to_subscription(
                 target_inbound_ids = plan.get_inbound_ids()
             else:
                 target_inbound_ids = await get_enabled_inbound_ids(session) or [1]
-            all_inbounds = await xui.get_inbounds()
-            enabled_inbound_ids = [ib.id for ib in all_inbounds if ib.enable]
-            valid_target_ids = [iid for iid in target_inbound_ids if iid in enabled_inbound_ids]
-            if not valid_target_ids:
-                if not enabled_inbound_ids:
-                    raise XUIError("هیچ اینباند فعالی در پنل پیدا نشد.")
-                valid_target_ids = [enabled_inbound_ids[0]]
-            target_inbound_ids = valid_target_ids
+            target_inbound_ids = await _resolve_usable_inbound_ids(xui, target_inbound_ids)
             first_inbound_id = target_inbound_ids[0]
             await xui.add_client(
                 inbound_id=first_inbound_id,
@@ -509,8 +526,11 @@ async def apply_paid_plan_to_subscription(
             config_links = await xui.get_client_links(email)
             if not config_links:
                 config_links = await xui.get_sub_links(sub.sub_id)
-            all_inbounds = await xui.get_inbounds()
-            first_inbound_id = next((ib.id for ib in all_inbounds if ib.enable), sub.inbound_id)
+            try:
+                all_inbounds = await xui.get_inbounds()
+                first_inbound_id = next((ib.id for ib in all_inbounds if ib.enable), sub.inbound_id)
+            except XUIError:
+                first_inbound_id = sub.inbound_id
 
     qr_bytes = await generate_qr_code(sub_link)
     await session.execute(
@@ -554,3 +574,47 @@ async def get_subscriptions_status(
 ) -> list[Subscription]:
     """دریافت لیست اشتراک‌های فعال کاربر."""
     return await get_user_subscriptions(session, user_id, active_only=True)
+
+
+def _is_missing_panel_client_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(
+        needle in msg
+        for needle in (
+            "found",
+            "not found",
+            "client not found",
+            "already removed",
+            "no such client",
+            "deleted",
+        )
+    )
+
+
+async def delete_subscription_completely(
+    session: AsyncSession,
+    sub: Subscription,
+) -> None:
+    """
+    حذف کامل اشتراک:
+      1. حذف کلاینت از پنل 3X-UI
+      2. حذف رکورد از دیتابیس ربات
+
+    اگر کلاینت قبلاً از پنل حذف شده باشد، حذف دیتابیس ادامه پیدا می‌کند.
+    """
+    try:
+        async with XUIClient(
+            panel_url=settings.panel_url,
+            username=settings.panel_username,
+            password=settings.panel_password,
+            api_path=settings.panel_api_path,
+            sub_port=settings.sub_port,
+        ) as xui:
+            await xui.delete_client(sub.email)
+    except Exception as exc:
+        logger.warning(
+            f"حذف کلاینت '{sub.email}' از پنل ناموفق بود، اما رکورد ربات حذف می‌شود: {exc}"
+        )
+
+    await session.delete(sub)
+    await session.commit()

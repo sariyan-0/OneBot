@@ -15,11 +15,14 @@ services/xui_api.py — کلاینت کامل API پنل 3X-UI
 
 from __future__ import annotations
 
+import base64
+import json
 import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
@@ -96,6 +99,19 @@ class ClientInfo:
         return self.inbound_ids[0] if self.inbound_ids else 0
 
 
+@dataclass
+class PublicSubscriptionInfo:
+    sub_id: str
+    links: List[str] = field(default_factory=list)
+    up: int = 0
+    down: int = 0
+    total: int = 0
+    expiry_time: int = 0
+    profile_title: str = ""
+    uuid: str = ""
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
 # ──────────────────────────────────────────────
 # Standalone helper — قابل import از هر جا
 # ──────────────────────────────────────────────
@@ -119,7 +135,6 @@ def build_sub_link_for(panel_url: str, sub_id: str, sub_port: int = 0) -> str:
 
     این تابع standalone است و نیازی به نمونه XUIClient ندارد.
     """
-    from urllib.parse import urlparse
     parsed = urlparse(panel_url.rstrip("/"))
     host = parsed.hostname or ""
     scheme = parsed.scheme or "https"
@@ -165,7 +180,6 @@ class XUIClient:
         # _sub_base = برای لینک ساب — بدون webBasePath، با sub_port اگر تنظیم شده
         # مثال (sub_port=0):    https://host:8443
         # مثال (sub_port=2096): https://host:2096
-        from urllib.parse import urlparse
         _parsed = urlparse(self._base)
         _host = _parsed.hostname or ""
         _scheme = _parsed.scheme or "https"
@@ -189,6 +203,46 @@ class XUIClient:
         self._cookies: Dict[str, str] = {}
         self._logged_in: bool = bool(self._api_token)
         self._csrf_token: str = ""   # CSRF token دریافت‌شده بعد از login
+        self._config_loaded: bool = False
+
+    async def _load_db_overrides(self) -> None:
+        """در صورت موجود بودن، تنظیمات اتصال پنل را از admin_settings هم می‌خواند."""
+        if self._config_loaded:
+            return
+        self._config_loaded = True
+        try:
+            from database import AsyncSessionLocal
+            from database.crud import get_setting
+        except Exception:
+            return
+
+        try:
+            async with AsyncSessionLocal() as session:
+                db_panel_url = (await get_setting(session, "PANEL_URL", "")).strip()
+                db_api_token = (await get_setting(session, "PANEL_API_TOKEN", "")).strip()
+                db_username = (await get_setting(session, "PANEL_USERNAME", "")).strip()
+                db_password = (await get_setting(session, "PANEL_PASSWORD", "")).strip()
+                db_api_path = (await get_setting(session, "PANEL_API_PATH", "")).strip()
+                db_sub_port = (await get_setting(session, "SUB_PORT", "")).strip()
+
+            if db_panel_url:
+                self._base = db_panel_url.rstrip("/")
+            if db_api_path:
+                self._api = db_api_path.rstrip("/")
+            if db_username:
+                self._username = db_username
+            if db_password:
+                self._password = db_password
+            if db_api_token:
+                self._api_token = db_api_token
+            if db_sub_port.isdigit():
+                _parsed = urlparse(self._base)
+                _host = _parsed.hostname or ""
+                _scheme = _parsed.scheme or "https"
+                _port = int(db_sub_port)
+                self._sub_base = f"{_scheme}://{_host}:{_port}"
+        except Exception as exc:
+            logger.debug(f"خواندن تنظیمات پنل از DB ناموفق بود: {exc}")
 
     @staticmethod
     def _extract_origin(url: str) -> str:
@@ -210,9 +264,13 @@ class XUIClient:
     # ── context manager ──────────────────────
 
     async def __aenter__(self) -> "XUIClient":
+        await self._load_db_overrides()
         await self._init_session()
         if self._api_token:
             logger.info(f"ورود به پنل {self._base}/ با API Token (Bearer)")
+            self._logged_in = True
+        elif self._username and self._password:
+            await self.login()
         else:
             await self.login()
         return self
@@ -283,17 +341,41 @@ class XUIClient:
 
                 if resp.status_code == 401:
                     if self._api_token:
-                        raise XUIAuthError("API Token پنل نامعتبر است یا دسترسی ندارد.")
-                    logger.warning("Session منقضی — دوباره login...")
-                    self._logged_in = False
-                    await self.login()
-                    req_kwargs2 = dict(kwargs)
-                    h2 = dict(req_kwargs2.get("headers", {}))
-                    h2.setdefault("Accept", "application/json")
-                    if self._csrf_token:
-                        h2.setdefault("X-CSRF-Token", self._csrf_token)
-                    req_kwargs2["headers"] = h2
-                    resp = await self._session.request(method, url, **req_kwargs2)
+                        if self._username and self._password:
+                            logger.warning("API Token ناموفق بود — تلاش برای ورود با username/password...")
+                            saved_token = self._api_token
+                            try:
+                                self._api_token = ""
+                                self._logged_in = False
+                                await self.login()
+                            except XUIAuthError as exc:
+                                self._api_token = saved_token
+                                self._logged_in = True
+                                raise XUIAuthError(
+                                    f"API Token پنل نامعتبر است و ورود با نام کاربری/رمز هم ناموفق بود: {exc}"
+                                ) from exc
+                            req_kwargs2 = dict(kwargs)
+                            h2 = dict(req_kwargs2.get("headers", {}))
+                            h2.setdefault("Accept", "application/json")
+                            if self._csrf_token:
+                                h2.setdefault("X-CSRF-Token", self._csrf_token)
+                            req_kwargs2["headers"] = h2
+                            resp = await self._session.request(method, url, **req_kwargs2)
+                        else:
+                            raise XUIAuthError("API Token پنل نامعتبر است یا دسترسی ندارد.")
+                    elif self._username and self._password:
+                        logger.warning("Session منقضی — دوباره login...")
+                        self._logged_in = False
+                        await self.login()
+                        req_kwargs2 = dict(kwargs)
+                        h2 = dict(req_kwargs2.get("headers", {}))
+                        h2.setdefault("Accept", "application/json")
+                        if self._csrf_token:
+                            h2.setdefault("X-CSRF-Token", self._csrf_token)
+                        req_kwargs2["headers"] = h2
+                        resp = await self._session.request(method, url, **req_kwargs2)
+                    else:
+                        raise XUIAuthError("دسترسی به پنل ناموفق بود.")
 
                 if resp.status_code == 404:
                     raise XUINotFoundError(f"مسیر {url} پیدا نشد")
@@ -373,25 +455,40 @@ class XUIClient:
     # ── Inbounds ─────────────────────────────
 
     async def get_inbounds(self) -> List[InboundInfo]:
-        """GET /inbounds/list — لیست کامل inbound‌ها."""
-        data = await self._request("GET", "/inbounds/list")
-        result: List[InboundInfo] = []
-        for item in data.get("obj", []):
-            result.append(
-                InboundInfo(
-                    id=item["id"],
-                    remark=item.get("remark", ""),
-                    protocol=item.get("protocol", ""),
-                    port=item.get("port", 0),
-                    enable=item.get("enable", True),
-                    up=item.get("up", 0),
-                    down=item.get("down", 0),
-                    total=item.get("total", 0),
-                    expiry_time=item.get("expiryTime", 0),
-                    raw=item,
-                )
-            )
-        return result
+        """لیست inboundها با fallback بین endpointهای مختلف پنل."""
+        paths = ["/inbounds/list", "/inbounds/list/slim", "/inbounds/options"]
+        last_exc: Exception | None = None
+
+        for path in paths:
+            try:
+                data = await self._request("GET", path)
+                result: List[InboundInfo] = []
+                for item in data.get("obj", []):
+                    inbound_id = item.get("id") or item.get("value") or item.get("key")
+                    if inbound_id is None:
+                        continue
+                    result.append(
+                        InboundInfo(
+                            id=int(inbound_id),
+                            remark=item.get("remark", "") or item.get("label", "") or item.get("name", ""),
+                            protocol=item.get("protocol", ""),
+                            port=item.get("port", 0) or 0,
+                            enable=item.get("enable", True),
+                            up=item.get("up", 0) or 0,
+                            down=item.get("down", 0) or 0,
+                            total=item.get("total", 0) or 0,
+                            expiry_time=item.get("expiryTime", 0) or 0,
+                            raw=item,
+                        )
+                    )
+                if result:
+                    return result
+            except XUINotFoundError as exc:
+                last_exc = exc
+                continue
+        if last_exc is not None:
+            raise last_exc
+        return []
 
     async def get_inbound(self, inbound_id: int) -> InboundInfo:
         """GET /inbounds/get/:id — یک inbound مشخص."""
@@ -465,7 +562,11 @@ class XUIClient:
             "inboundIds": [inbound_id],
         }
 
-        await self._request("POST", "/clients/add", json=payload)
+        try:
+            await self._request("POST", "/clients/add", json=payload)
+        except XUINotFoundError:
+            # بعض بیلدهای پنل فقط bulkCreate را expose می‌کنند.
+            await self._request("POST", "/clients/bulkCreate", json=[payload])
         logger.info(f"کلاینت '{email}' در inbound {inbound_id} ایجاد شد.")
 
         # پنل UUID نهایی را بعد از ایجاد برمی‌گرداند؛ یک بار از get_client
@@ -540,7 +641,18 @@ class XUIClient:
         path = f"/clients/del/{email}"
         if keep_traffic:
             path += "?keepTraffic=1"
-        await self._request("POST", path)
+        try:
+            await self._request("POST", path)
+        except XUINotFoundError:
+            # بعضی بیلدهای جدید پنل فقط bulkDel را اکسپوز می‌کنند
+            await self._request(
+                "POST",
+                "/clients/bulkDel",
+                json={
+                    "emails": [email],
+                    "keepTraffic": bool(keep_traffic),
+                },
+            )
         logger.info(f"کلاینت '{email}' حذف شد.")
 
     async def get_client_traffic(self, email: str) -> Optional[ClientInfo]:
@@ -618,7 +730,8 @@ class XUIClient:
             data = await self._request("GET", f"/clients/subLinks/{sub_id}")
             return data.get("obj", [])
         except (XUINotFoundError, XUIError):
-            return []
+            info = await self.get_public_subscription_info(sub_id)
+            return info.links if info else []
 
     async def get_client_links(self, email: str) -> List[str]:
         """
@@ -630,6 +743,113 @@ class XUIClient:
             return data.get("obj", [])
         except (XUINotFoundError, XUIError):
             return []
+
+    @staticmethod
+    def _parse_subscription_userinfo(header_value: str) -> Dict[str, int]:
+        result = {"upload": 0, "download": 0, "total": 0, "expire": 0}
+        for part in (header_value or "").split(";"):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            key = key.strip().lower()
+            if key not in result:
+                continue
+            try:
+                result[key] = int(value.strip())
+            except ValueError:
+                continue
+        return result
+
+    @staticmethod
+    def _decode_profile_title(header_value: str) -> str:
+        value = (header_value or "").strip()
+        if value.startswith("base64:"):
+            payload = value.split(":", 1)[1]
+            try:
+                decoded = base64.b64decode(payload + "=" * (-len(payload) % 4))
+                return decoded.decode("utf-8", "replace").strip()
+            except Exception:
+                return value
+        return value
+
+    @staticmethod
+    def _decode_base64_subscription(body: str) -> List[str]:
+        raw = (body or "").strip()
+        if not raw:
+            return []
+        try:
+            decoded = base64.b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8", "replace")
+        except Exception:
+            return []
+        return [line.strip() for line in decoded.splitlines() if line.strip()]
+
+    @staticmethod
+    def _extract_uuid_from_link(link: str) -> str:
+        raw = (link or "").strip()
+        if raw.startswith("vless://") or raw.startswith("trojan://"):
+            parsed = urlparse(raw)
+            return (parsed.username or "").strip()
+        if raw.startswith("vmess://"):
+            try:
+                payload = raw.split("://", 1)[1]
+                decoded = base64.b64decode(payload + "=" * (-len(payload) % 4)).decode("utf-8", "replace")
+                obj = json.loads(decoded)
+                return str(obj.get("id", "")).strip()
+            except Exception:
+                return ""
+        return ""
+
+    async def get_public_subscription_info(self, sub_id: str) -> Optional[PublicSubscriptionInfo]:
+        if not self._session:
+            await self._init_session()
+        if not self._session:
+            return None
+
+        url = f"{self._sub_base}/sub/{sub_id}"
+        try:
+            response = await self._session.get(
+                url,
+                headers={"Accept": "text/plain,*/*"},
+            )
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning(f"خطا در خواندن لینک عمومی sub/{sub_id}: {exc}")
+            return None
+
+        links = self._decode_base64_subscription(response.text)
+        if not links:
+            return None
+
+        userinfo = self._parse_subscription_userinfo(response.headers.get("subscription-userinfo", ""))
+        profile_title = self._decode_profile_title(response.headers.get("profile-title", ""))
+        uuid_value = ""
+        for link in links:
+            uuid_value = self._extract_uuid_from_link(link)
+            if uuid_value:
+                break
+
+        expire_seconds = userinfo.get("expire", 0)
+        expiry_time = expire_seconds * 1000 if expire_seconds > 0 else 0
+        return PublicSubscriptionInfo(
+            sub_id=sub_id,
+            links=links,
+            up=userinfo.get("upload", 0),
+            down=userinfo.get("download", 0),
+            total=userinfo.get("total", 0),
+            expiry_time=expiry_time,
+            profile_title=profile_title,
+            uuid=uuid_value,
+            raw={
+                "source": "public_sub",
+                "url": url,
+                "headers": {
+                    "subscription-userinfo": response.headers.get("subscription-userinfo", ""),
+                    "profile-title": response.headers.get("profile-title", ""),
+                },
+            },
+        )
 
     # ── Server / Panel management ─────────────
 
@@ -784,4 +1004,67 @@ class XUIClient:
                     return self._parse_client(item)
         except XUIError as e:
             logger.warning(f"خطا در جستجوی UUID: {e}")
+        return None
+
+    async def find_client_by_sub_id(self, sub_id: str) -> Optional[ClientInfo]:
+        """
+        جستجوی کلاینت بر اساس subId.
+
+        ابتدا از endpoint جستجوی paged استفاده می‌کند که طبق کالکشن،
+        روی email / subId / comment جستجوی substring انجام می‌دهد.
+        اگر نتیجه نداد، به clients/list fallback می‌کند.
+        """
+        sub_id_clean = sub_id.strip()
+        if not sub_id_clean:
+            return None
+        lookup_errors: List[str] = []
+
+        try:
+            data = await self._request(
+                "GET",
+                f"/clients/list/paged?page=1&pageSize=25&search={sub_id_clean}",
+            )
+            obj = data.get("obj") or {}
+            for item in obj.get("items", []):
+                if str(item.get("subId", "")).strip() == sub_id_clean:
+                    return self._parse_client(item)
+        except XUIError as e:
+            lookup_errors.append(f"paged list: {e}")
+
+        try:
+            data = await self._request("GET", "/clients/list")
+            for item in data.get("obj", []):
+                if str(item.get("subId", "")).strip() == sub_id_clean:
+                    return self._parse_client(item)
+        except XUIError as e:
+            lookup_errors.append(f"list: {e}")
+
+        public_info = await self.get_public_subscription_info(sub_id_clean)
+        if public_info:
+            synthetic_email = f"sub-{sub_id_clean}@import.local"
+            if lookup_errors:
+                logger.info(
+                    f"subId={sub_id_clean} از لینک عمومی subscription بازیابی شد "
+                    f"(fallback پس از ناموفق بودن endpointهای لیست کلاینت)"
+                )
+            return ClientInfo(
+                email=synthetic_email[:128],
+                sub_id=sub_id_clean,
+                inbound_ids=[],
+                enable=bool(public_info.links),
+                total_gb=public_info.total,
+                expiry_time=public_info.expiry_time,
+                up=public_info.up,
+                down=public_info.down,
+                limit_ip=0,
+                uuid=public_info.uuid,
+                raw={
+                    **public_info.raw,
+                    "profile_title": public_info.profile_title,
+                    "synthetic_email": synthetic_email[:128],
+                },
+            )
+
+        for err in lookup_errors:
+            logger.warning(f"خطا در جستجوی subId: {err}")
         return None

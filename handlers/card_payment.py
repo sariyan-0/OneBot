@@ -28,6 +28,7 @@ from database.crud import (
     get_user_by_telegram_id, update_payment_status,
 )
 from services.card_payment import calc_rial_amount, fmt_card_number, get_card_info
+from services.referral import grant_referral_commission_for_payment
 from services.subscription import create_new_subscription, apply_paid_plan_to_subscription
 from services.wallet import credit_wallet
 
@@ -65,11 +66,11 @@ async def _notify_admins_receipt(
 
     # بخش قیمت — اگر تخفیف دارد خط اضافی نشان بده
     if discount_code and discount_percent > 0 and original_price_usdt > 0:
+        original_toman = int(original_price_usdt * amount_toman / final_price_usdt) if final_price_usdt > 0 else amount_toman
         price_lines = (
-            f"💵 قیمت اصلی: <s>{original_price_usdt:.2f} دلار</s>\n"
+            f"💵 قیمت اصلی: <s>{original_toman:,} تومان</s>\n"
             f"🎟 کد تخفیف: <code>{discount_code}</code>  ({discount_percent}٪ تخفیف)\n"
-            f"💰 مبلغ پرداختی: <b>{amount_toman:,} تومان</b>  "
-            f"(<b>{final_price_usdt:.2f} دلار</b>)\n"
+            f"💰 مبلغ پرداختی: <b>{amount_toman:,} تومان</b>\n"
         )
     else:
         price_lines = f"💰 مبلغ: <b>{amount_toman:,} تومان</b>\n"
@@ -188,18 +189,18 @@ async def cb_card_pay(callback: CallbackQuery, state: FSMContext) -> None:
     # بخش تخفیف — اگه تخفیف داره نشون بده
     discount_line = ""
     if discount_percent > 0:
+        original_toman = int(original_price * card["rate"])
         discount_line = (
             f"🏷 تخفیف {discount_percent}٪ اعمال شد "
-            f"({original_price:.2f}$ → <b>{final_price:.2f}$</b>)\n"
+            f"(<s>{original_toman:,} تومان</s> → <b>{toman:,} تومان</b>)\n"
         )
 
     await callback.message.answer(
         f"💳 <b>پرداخت کارت به کارت</b>\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📦 پلن: <b>{plan.name}</b>\n"
-        f"💵 قیمت: <b>{final_price:.2f} دلار</b>\n"
+        f"💵 قیمت: <b>{toman:,} تومان</b>\n"
         f"{discount_line}"
-        f"💱 نرخ محاسبه: <b>{card['rate']:,} تومان</b> / دلار\n\n"
         f"🏦 شماره کارت:\n"
         f"<code>{card_fmt}</code>\n"
         f"👤 به نام: <b>{holder}</b>\n\n"
@@ -284,7 +285,7 @@ async def cb_sub_card_pay(callback: CallbackQuery, state: FSMContext) -> None:
         f"💳 <b>پرداخت کارت به کارت</b>\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📦 پلن: <b>{plan.name}</b>\n"
-        f"💵 قیمت: <b>{final_price:.2f} دلار</b>\n\n"
+        f"💵 قیمت: <b>{toman:,} تومان</b>\n\n"
         f"🏦 شماره کارت:\n<code>{card_fmt}</code>\n"
         f"👤 به نام: <b>{holder}</b>\n\n"
         f"💵 مبلغ دقیق واریزی:\n  • <b>{toman:,} تومان</b>\n\n"
@@ -355,12 +356,18 @@ async def card_receive_receipt(message: Message, state: FSMContext) -> None:
     )
 
     await message.answer(
-        f"✅ <b>رسید دریافت شد!</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🔖 شناسه سفارش: <code>{order_id}</code>\n\n"
-        f"رسید شما برای بررسی به ادمین ارسال شد.\n"
-        f"پس از تأیید، اشتراک شما فعال می‌شود.\n\n"
-        f"⏳ معمولاً کمتر از ۳۰ دقیقه طول می‌کشد.",
+        (
+            f"✅ <b>رسید دریافت شد!</b>\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"🔖 شناسه سفارش: <code>{order_id}</code>\n\n"
+            f"رسید شما برای بررسی به ادمین ارسال شد.\n"
+            + (
+                "پس از تأیید، کیف پول شما شارژ می‌شود.\n\n"
+                if order_id.startswith("wallet_")
+                else "پس از تأیید، اشتراک شما فعال می‌شود.\n\n"
+            )
+            + "⏳ معمولاً کمتر از ۳۰ دقیقه طول می‌کشد."
+        ),
         parse_mode="HTML",
     )
 
@@ -401,10 +408,23 @@ async def cb_card_approve(callback: CallbackQuery) -> None:
 
         plan_id = getattr(payment, "inbound_id", 0) or 0
 
+        payment_rate = 0
+        try:
+            payment_rate = (await get_card_info()).get("rate", 0) or 0
+        except Exception:
+            payment_rate = 0
+
         try:
             if order_id.startswith("wallet_"):
-                credited = await credit_wallet(session, user.id, float(payment.amount_usdt))
+                exact_toman = int((getattr(payment, "amount_rial", 0) or 0) // 10)
+                credited_toman = await credit_wallet(session, user.id, exact_toman, currency="toman")
                 await update_payment_status(session, payment.id, "confirmed")
+                await grant_referral_commission_for_payment(
+                    session,
+                    payment,
+                    explicit_rate_toman=payment_rate,
+                    exact_toman_source=exact_toman,
+                )
                 result = None
             elif order_id.startswith(("renew_", "change_")):
                 parts = order_id.split("_", 3)
@@ -419,6 +439,7 @@ async def cb_card_approve(callback: CallbackQuery) -> None:
                     action=action,
                 )
                 await update_payment_status(session, payment.id, "confirmed", result.subscription.id)
+                await grant_referral_commission_for_payment(session, payment, explicit_rate_toman=payment_rate)
             else:
                 result = await create_new_subscription(
                     session=session,
@@ -428,6 +449,7 @@ async def cb_card_approve(callback: CallbackQuery) -> None:
                     plan_id=plan_id,
                 )
                 await update_payment_status(session, payment.id, "confirmed", result.subscription.id)
+                await grant_referral_commission_for_payment(session, payment, explicit_rate_toman=payment_rate)
         except Exception as e:
             logger.error(f"خطا در ایجاد اشتراک بعد از تأیید کارت {order_id}: {e}")
             await processing.edit_text(
@@ -442,20 +464,9 @@ async def cb_card_approve(callback: CallbackQuery) -> None:
     # اطلاع‌رسانی به کاربر
     try:
         if order_id.startswith("wallet_"):
-            payment_rate = 0
-            try:
-                payment_rate = (await get_card_info()).get("rate", 0) or 0
-            except Exception:
-                payment_rate = 0
-            added_amount = float(payment.amount_usdt)
-            added_toman = int(added_amount * payment_rate) if payment_rate > 0 else 0
-            credited_toman = int(credited * payment_rate) if payment_rate > 0 else 0
-            added_lines = f"  • <b>${added_amount:.2f}</b>\n"
-            if added_toman:
-                added_lines += f"  • <b>{added_toman:,} تومان</b>\n"
-            balance_lines = f"  • <b>${credited:.2f}</b>\n"
-            if credited_toman:
-                balance_lines += f"  • <b>{credited_toman:,} تومان</b>"
+            exact_rial = int(getattr(payment, "amount_rial", 0) or 0)
+            added_toman = exact_rial // 10 if exact_rial > 0 else int(payment.amount_usdt or 0)
+            balance_lines = f"  • <b>{int(credited_toman):,} تومان</b>"
             await callback.bot.send_message(
                 chat_id=user.telegram_id,
                 text=(
@@ -463,7 +474,7 @@ async def cb_card_approve(callback: CallbackQuery) -> None:
                     f"━━━━━━━━━━━━━━━\n"
                     f"🔖 سفارش: <code>{order_id}</code>\n"
                     f"💰 مبلغ افزوده‌شده:\n"
-                    f"{added_lines}"
+                    f"  • <b>{added_toman:,} تومان</b>\n"
                     f"💳 موجودی جدید:\n"
                     f"{balance_lines}"
                 ),

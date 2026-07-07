@@ -57,24 +57,21 @@ async def cmd_start_referral(message: Message) -> None:
             admin_ids=settings.admin_ids,
         )
 
-        if created:
-            # کاربر تازه — پردازش referral
-            referrer_name = await process_referral(
-                session=session,
-                new_user=db_user,
-                referral_code=referral_code,
-                bot_username=bot_username,
+        referrer_name = await process_referral(
+            session=session,
+            new_user=db_user,
+            referral_code=referral_code,
+            bot_username=bot_username,
+        )
+        if referrer_name:
+            await message.answer(
+                f"🎉 *خوش آمدید!*\n\n"
+                f"شما از طریق دعوت *{referrer_name}* وارد شدید.\n"
+                "از این به بعد درصدی از خریدهای شما به کیف پول دعوت‌کننده اضافه می‌شود.",
+                parse_mode="Markdown",
             )
-            if referrer_name:
-                await message.answer(
-                    f"🎉 *خوش آمدید!*\n\n"
-                    f"شما از طریق دعوت *{referrer_name}* وارد شدید.\n"
-                    "هر دوی شما از مزایای ویژه بهره‌مند می‌شوید!",
-                    parse_mode="Markdown",
-                )
-                # اطلاع‌رسانی به دعوت‌کننده
-                await _notify_referrer(message, referral_code, tg_user)
-        else:
+            await _notify_referrer(message, referral_code, tg_user)
+        elif not created:
             await message.answer("👋 خوش آمدید! شما قبلاً ثبت‌نام کرده‌اید.")
 
     # نمایش منوی اصلی
@@ -121,10 +118,13 @@ async def menu_referral(event: Message | CallbackQuery) -> None:
         f"🔗 *لینک دعوت شما:*\n`{stats.referral_link}`\n\n"
         f"📊 *آمار شما:*\n"
         f"• کل دعوت‌شده‌ها: `{stats.total_referrals}` نفر\n"
-        f"• پاداش دریافتی: `{stats.total_reward_days}` روز رایگان\n\n"
+        f"• تعداد فعال‌شده‌ها: `{stats.rewarded_referrals}` نفر\n"
+        f"• مجموع کمیسیون:\n"
+        f"  • `${stats.total_commission_usdt:.2f}`\n"
+        f"  • `{stats.total_commission_toman:,} تومان`\n\n"
         "🎁 *قوانین پاداش:*\n"
-        "• به ازای هر دوست دعوت‌شده ۳ روز اشتراک رایگان\n"
-        "• پاداش پس از اولین خرید دوست شما فعال می‌شود\n\n"
+        "• اولین لینک دعوتی که کاربر با آن وارد شود برای همیشه ثبت می‌شود\n"
+        "• درصدی از تمام خریدهای بعدی او به کیف پول شما اضافه می‌شود\n\n"
         "لینک را برای دوستان خود ارسال کنید! 🚀"
     )
 
@@ -158,7 +158,7 @@ async def _notify_referrer(message: Message, referral_code: str, new_tg_user) ->
     text = (
         f"🎉 *دعوت موفق!*\n\n"
         f"*{name}* با لینک دعوت شما ثبت‌نام کرد.\n"
-        "پس از اولین خرید ایشان، ۳ روز اشتراک رایگان به حساب شما اضافه می‌شود! 🎁"
+        "اگر خرید انجام دهد، درصد کمیسیونش به کیف پول شما اضافه می‌شود. 🎁"
     )
     try:
         await message.bot.send_message(referrer.telegram_id, text, parse_mode="Markdown")  # type: ignore[union-attr]

@@ -23,10 +23,10 @@ from aiogram.types import Message, TelegramObject
 from loguru import logger
 
 # ── تنظیمات ────────────────────────────────────
-BURST_THRESHOLD    = 3      # پیام در BURST_WINDOW_SEC قبل از penalty
-BURST_WINDOW_SEC   = 5.0    # پنجره burst (ثانیه)
-COOLDOWN_STEP_SEC  = 5      # هر تخلف چند ثانیه اضافه می‌شه
-MAX_COOLDOWN_SEC   = 30     # حداکثر cooldown
+BURST_THRESHOLD    = 6      # پیام در BURST_WINDOW_SEC قبل از penalty
+BURST_WINDOW_SEC   = 8.0    # پنجره burst (ثانیه)
+COOLDOWN_STEP_SEC  = 3      # هر تخلف چند ثانیه اضافه می‌شه
+MAX_COOLDOWN_SEC   = 15     # حداکثر cooldown
 RESET_INTERVAL_SEC = 3600   # ریست ساعتی
 
 # ── Whitelist patterns ─────────────────────────
@@ -90,7 +90,7 @@ class RateLimitMiddleware(BaseMiddleware):
     Anti-flood با penalty پله‌ای و ریست خودکار ساعتی.
 
     سازگار با main.py فعلی:
-        dp.message.middleware(RateLimitMiddleware(rate_limit=3, window_sec=1.0))
+        dp.message.middleware(RateLimitMiddleware(rate_limit=6, window_sec=8.0))
     """
 
     def __init__(
@@ -115,7 +115,7 @@ class RateLimitMiddleware(BaseMiddleware):
                 logger.info(f"[RateLimit] ریست ساعتی — {count} کاربر پاک شد")
 
     def _next_cooldown(self, violation_count: int) -> int:
-        """violation=1→5s, =2→10s, ... max 30s"""
+        """violation=1→3s, =2→6s, ... max 15s"""
         return min(violation_count * COOLDOWN_STEP_SEC, MAX_COOLDOWN_SEC)
 
     async def __call__(

@@ -1,5 +1,5 @@
 # docker-compose.yml — ONEBOT VPN Bot
-# اگر SQLite: فقط سرویس bot بالا می‌آید
+# SQLite دیتابیس در ./data/shared می‌شود تا پنل وب Node.js هم به آن دسترسی داشته باشد
 # اگر PostgreSQL: DB_ENABLED=true در .env تنظیم می‌شود
 
 services:
@@ -17,8 +17,8 @@ services:
     env_file:
       - .env
     volumes:
-      - bot_logs:/app/logs
-      - bot_data:/app/data        # SQLite در این مسیر ذخیره می‌شود
+      - ./logs:/app/logs
+      - ./data:/data              # SQLite دیتابیس shared
     ports:
       # پورت webhook برای NOWPayments و MaxelPay
       # پیش‌فرض: 9988 — با 3X-UI و سرویس‌های رایج تداخل ندارد
@@ -57,10 +57,6 @@ services:
 volumes:
   postgres_data:
     name: onebot_pgdata
-  bot_logs:
-    name: onebot_bot_logs
-  bot_data:
-    name: onebot_bot_data
 
 networks:
   onebot_net:

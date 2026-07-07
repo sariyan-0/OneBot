@@ -37,7 +37,7 @@ from services.subscription import create_new_subscription
 from services.xui_api import XUIClient, XUIError
 from services.banner import send_with_banner
 from services.payment_methods import get_payment_status
-from services.wallet import wallet_balance
+from services.wallet import wallet_balance, wallet_balance_toman
 
 router = Router(name="shop")
 
@@ -129,7 +129,7 @@ async def _get_usdt_rate() -> int:
         return 0
 
 
-async def _get_wallet_balance(session, tg_user) -> float:
+async def _get_wallet_balances(session, tg_user) -> tuple[float, int]:
     db_user, _ = await get_or_create_user(
         session,
         tg_user.id,
@@ -137,7 +137,7 @@ async def _get_wallet_balance(session, tg_user) -> float:
         tg_user.first_name,
         admin_ids=settings.admin_ids,
     )
-    return await wallet_balance(session, db_user.id)
+    return await wallet_balance(session, db_user.id), await wallet_balance_toman(session, db_user.id)
 
 
 def _fmt_usdt(price: float) -> str:
@@ -160,24 +160,33 @@ def _fmt_usdt(price: float) -> str:
     return formatted
 
 
-async def _fmt_plan_with_price(plan) -> str:
-    """فرمت پلن با نمایش قیمت دلاری + تومانی (اگر نرخ تنظیم شده)."""
+def _plan_toman_price(plan, fallback_rate: int = 0) -> int:
+    price_toman = int(getattr(plan, "price_toman", 0) or 0)
+    if price_toman <= 0 and fallback_rate > 0:
+        price_toman = int(round(float(plan.price_usdt) * fallback_rate))
+    return max(price_toman, 0)
+
+
+async def _fmt_plan_with_price(plan, show_crypto_price: bool = True, show_toman_price: bool = True, price_toman: int | None = None) -> str:
+    """فرمت پلن برای نمایش عمومی — کارت تومان، کریپتو دلار."""
     if plan.traffic_gb == 0:
         if plan.limit_ip and plan.limit_ip > 0:
             user_label = _FARSI_USERS.get(plan.limit_ip, f"{plan.limit_ip} کاربره")
-            traffic = f"♾ نامحدود — {user_label}"
+            traffic = f"نامحدود — {user_label}"
         else:
-            traffic = "♾ نامحدود"
+            traffic = "نامحدود"
     else:
         traffic = f"{plan.traffic_gb} گیگابایت"
 
-    rate = await _get_usdt_rate()
     price_str = _fmt_usdt(plan.price_usdt)
-    price_toman = getattr(plan, "price_toman", 0) or 0
-    if price_toman > 0:
-        price_line = f"💵 قیمت: `{price_toman:,} تومان (${price_str})`"
+    if price_toman is None:
+        price_toman = getattr(plan, "price_toman", 0) or 0
+    if not show_toman_price or price_toman <= 0:
+        price_line = f"💠 قیمت کریپتو: `${price_str}`"
+    elif price_toman > 0 and not show_crypto_price:
+        price_line = f"💵 قیمت کارت: `{price_toman:,} تومان`"
     else:
-        price_line = f"💵 قیمت: `${price_str}`"
+        price_line = f"💵 قیمت کارت: `{price_toman:,} تومان`\n💠 قیمت کریپتو: `${price_str}`"
 
     return (
         f"📦 *{plan.name}*\n"
@@ -188,21 +197,26 @@ async def _fmt_plan_with_price(plan) -> str:
     )
 
 
-def _fmt_plan(plan) -> str:
-    """نسخه sync برای جاهایی که async نمی‌شه — فقط USD."""
+def _fmt_plan(plan, show_crypto_price: bool = True, show_toman_price: bool = True, price_toman: int | None = None) -> str:
+    """نسخه sync برای نمایش عمومی — کارت تومان، کریپتو دلار."""
     if plan.traffic_gb == 0:
         if plan.limit_ip and plan.limit_ip > 0:
             user_label = _FARSI_USERS.get(plan.limit_ip, f"{plan.limit_ip} کاربره")
-            traffic = f"♾ نامحدود — {user_label}"
+            traffic = f"نامحدود — {user_label}"
         else:
-            traffic = "♾ نامحدود"
+            traffic = "نامحدود"
     else:
         traffic = f"{plan.traffic_gb} گیگابایت"
     price_str = _fmt_usdt(plan.price_usdt)
-    price_toman = getattr(plan, "price_toman", 0) or 0
-    price_line = f"💵 قیمت: `${price_str}`"
-    if price_toman > 0:
-        price_line = f"💵 قیمت: `{price_toman:,} تومان (${price_str})`"
+    if price_toman is None:
+        price_toman = getattr(plan, "price_toman", 0) or 0
+    price_line = f"💠 قیمت کریپتو: `${price_str}`"
+    if not show_toman_price or price_toman <= 0:
+        price_line = f"💠 قیمت کریپتو: `${price_str}`"
+    elif price_toman > 0 and not show_crypto_price:
+        price_line = f"💵 قیمت کارت: `{price_toman:,} تومان`"
+    else:
+        price_line = f"💵 قیمت کارت: `{price_toman:,} تومان`\n💠 قیمت کریپتو: `${price_str}`"
     return (
         f"📦 *{plan.name}*\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -240,19 +254,22 @@ async def msg_buy(message: Message) -> None:
     unlimited_count = sum(1 for p in plans if p.traffic_gb == 0)
     desc_parts = []
     if limited_count:
-        desc_parts.append(f"📦 {limited_count} پلن حجمی")
+        desc_parts.append(f"{limited_count} پلن حجمی")
     if unlimited_count:
-        desc_parts.append(f"♾ {unlimited_count} پلن نامحدود")
+        desc_parts.append(f"{unlimited_count} پلن نامحدود")
+
+    summary_line = f"{' | '.join(desc_parts)}\n\n" if desc_parts else ""
 
     rate = await _get_usdt_rate()
+    pm = await get_payment_status()
     await send_with_banner(
         message,
         f"🛒 <b>خرید اشتراک VPN</b>\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"{' | '.join(desc_parts)}\n\n"
+        f"{summary_line}"
         "👇 پلن مورد نظر خود را انتخاب کنید:",
         parse_mode="HTML",
-        reply_markup=get_plans_keyboard(plans, rate),
+        reply_markup=get_plans_keyboard(plans, rate, show_crypto_price=pm["crypto"], show_toman_price=pm["card"]),
     )
 
 
@@ -260,7 +277,7 @@ async def _safe_edit_cb(callback: CallbackQuery, text: str, **kwargs) -> None:
     """edit_text امن — اگه پیام عکس‌دار بود، answer جدید می‌فرسته."""
     try:
         if callback.message.photo or callback.message.document:  # type: ignore
-            await callback.message.answer(text, **kwargs)  # type: ignore
+            await callback.message.edit_caption(caption=text, **kwargs)  # type: ignore
         else:
             await callback.message.edit_text(text, **kwargs)  # type: ignore
     except Exception:
@@ -273,13 +290,14 @@ async def cb_show_plans(callback: CallbackQuery) -> None:
     async with AsyncSessionLocal() as session:
         plans = await get_active_plans(session)
     rate = await _get_usdt_rate()
+    pm = await get_payment_status()
     await _safe_edit_cb(
         callback,
         "🛒 *خرید اشتراک VPN*\n"
         "━━━━━━━━━━━━━━━\n"
         "👇 پلن مورد نظر خود را انتخاب کنید:",
         parse_mode="Markdown",
-        reply_markup=get_plans_keyboard(plans, rate),
+        reply_markup=get_plans_keyboard(plans, rate, show_crypto_price=pm["crypto"], show_toman_price=pm["card"]),
     )
 
 
@@ -293,7 +311,7 @@ async def cb_plan_select(callback: CallbackQuery, state: FSMContext) -> None:
     plan_id = int(callback.data.split(":")[1])
     async with AsyncSessionLocal() as session:
         plan = await get_plan(session, plan_id)
-        wallet_usdt = await _get_wallet_balance(session, callback.from_user) if callback.from_user else 0.0
+        wallet_usdt, wallet_toman = await _get_wallet_balances(session, callback.from_user) if callback.from_user else (0.0, 0)
     if not plan or not plan.is_active:
         await callback.answer("❌ این پلن در دسترس نیست.", show_alert=True)
         return
@@ -301,7 +319,14 @@ async def cb_plan_select(callback: CallbackQuery, state: FSMContext) -> None:
     flow = str(flow_data.get("action", "new") or "new")
     target_sub_id = int(flow_data.get("sub_id", 0) or 0)
     pm = await get_payment_status()
-    plan_text = await _fmt_plan_with_price(plan)
+    rate = await _get_usdt_rate()
+    price_toman = _plan_toman_price(plan, rate)
+    plan_text = await _fmt_plan_with_price(
+        plan,
+        show_crypto_price=pm["crypto"],
+        show_toman_price=pm["card"],
+        price_toman=price_toman,
+    )
     await _safe_edit_cb(
         callback,
         plan_text + "\n\n✅ روش پرداخت را انتخاب کنید:",
@@ -313,10 +338,12 @@ async def cb_plan_select(callback: CallbackQuery, state: FSMContext) -> None:
             crypto_invoice=pm.get("crypto_invoice", False),
             crypto_gateway=pm.get("crypto_gateway", "nowpayments"),
             amount=float(plan.price_usdt),
+            amount_toman=price_toman,
             plan_name=plan.name,
             flow=flow,
             target_sub_id=target_sub_id,
             wallet_balance_usdt=wallet_usdt,
+            wallet_balance_toman=wallet_toman,
         ),
     )
     if flow != "new":
@@ -332,12 +359,18 @@ async def cb_discount_request(callback: CallbackQuery, state: FSMContext) -> Non
     await callback.answer()
     plan_id = int(callback.data.split(":")[1])
     await state.set_state(DiscountState.waiting_code)
-    await state.update_data(plan_id=plan_id)
+    await state.update_data(
+        plan_id=plan_id,
+        plan_chat_id=callback.message.chat.id if callback.message else None,
+        plan_message_id=callback.message.message_id if callback.message else None,
+    )
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = InlineKeyboardBuilder()
     kb.button(text="❌ انصراف", callback_data=f"discount_cancel:{plan_id}")
-    await callback.message.answer(
+    await _safe_edit_cb(
+        callback,
         "🏷 کد تخفیف خود را وارد کنید:",
+        parse_mode="HTML",
         reply_markup=kb.as_markup(),
     )
 
@@ -345,29 +378,45 @@ async def cb_discount_request(callback: CallbackQuery, state: FSMContext) -> Non
 @router.callback_query(F.data.startswith("discount_cancel:"))
 async def cb_discount_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     """لغو ورود کد تخفیف — برگشت به صفحه پلن با روش‌های پرداخت واقعی."""
+    state_data = await state.get_data()
     await state.clear()
     await callback.answer("❌ انصراف از کد تخفیف.")
     plan_id = int(callback.data.split(":")[1])
     async with AsyncSessionLocal() as session:
         plan = await get_plan(session, plan_id)
-        wallet_usdt = await _get_wallet_balance(session, callback.from_user) if callback.from_user else 0.0
+        wallet_usdt, wallet_toman = await _get_wallet_balances(session, callback.from_user) if callback.from_user else (0.0, 0)
     if plan:
         # وضعیت روش‌های پرداخت را از DB بخوان — نه از default
         pm = await get_payment_status()
-        await callback.message.answer(
-            _fmt_plan(plan) + "\n\n✅ روش پرداخت را انتخاب کنید:",
-            parse_mode="Markdown",
-            reply_markup=get_plan_confirm_keyboard(
-                plan_id,
-                crypto_on=pm["crypto"],
-                card_on=pm["card"],
-                crypto_invoice=pm.get("crypto_invoice", False),
-                crypto_gateway=pm.get("crypto_gateway", "nowpayments"),
-                amount=float(plan.price_usdt),
-                plan_name=plan.name,
-                wallet_balance_usdt=wallet_usdt,
-            ),
+        rate = await _get_usdt_rate()
+        price_toman = _plan_toman_price(plan, rate)
+        plan_message_id = state_data.get("plan_message_id")
+        chat_id = state_data.get("plan_chat_id") or callback.message.chat.id
+        text = await _fmt_plan(plan, show_crypto_price=pm["crypto"], show_toman_price=pm["card"], price_toman=price_toman)
+        text += "\n\n✅ روش پرداخت را انتخاب کنید:"
+        markup = get_plan_confirm_keyboard(
+            plan_id,
+            crypto_on=pm["crypto"],
+            card_on=pm["card"],
+            crypto_invoice=pm.get("crypto_invoice", False),
+            crypto_gateway=pm.get("crypto_gateway", "nowpayments"),
+            amount=float(plan.price_usdt),
+            amount_toman=price_toman,
+            plan_name=plan.name,
+            wallet_balance_usdt=wallet_usdt,
+            wallet_balance_toman=wallet_toman,
         )
+        if plan_message_id:
+            try:
+                await callback.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=plan_message_id,
+                    text=text,
+                    parse_mode="Markdown",
+                    reply_markup=markup,
+                )
+            except Exception:
+                await callback.message.answer(text, parse_mode="Markdown", reply_markup=markup)
     else:
         await callback.message.answer("بازگشت به لیست پلن‌ها:", reply_markup=None)
         await cb_show_plans.__wrapped__(callback)  # type: ignore
@@ -383,11 +432,14 @@ async def msg_discount_cancel_text(message: Message, state: FSMContext) -> None:
     if plan_id:
         async with AsyncSessionLocal() as session:
             plan = await get_plan(session, plan_id)
+            wallet_usdt, wallet_toman = await _get_wallet_balances(session, message.from_user) if message.from_user else (0.0, 0)
         if plan:
             # وضعیت روش‌های پرداخت را از DB بخوان — نه از default
             pm = await get_payment_status()
+            rate = await _get_usdt_rate()
+            price_toman = _plan_toman_price(plan, rate)
             await message.answer(
-                _fmt_plan(plan) + "\n\n✅ روش پرداخت را انتخاب کنید:",
+                (await _fmt_plan(plan, show_crypto_price=pm["crypto"], show_toman_price=pm["card"], price_toman=price_toman)) + "\n\n✅ روش پرداخت را انتخاب کنید:",
                 parse_mode="Markdown",
                 reply_markup=get_plan_confirm_keyboard(
                     plan_id,
@@ -396,7 +448,10 @@ async def msg_discount_cancel_text(message: Message, state: FSMContext) -> None:
                     crypto_invoice=pm.get("crypto_invoice", False),
                     crypto_gateway=pm.get("crypto_gateway", "nowpayments"),
                     amount=float(plan.price_usdt),
+                    amount_toman=price_toman,
                     plan_name=plan.name,
+                    wallet_balance_usdt=wallet_usdt,
+                    wallet_balance_toman=wallet_toman,
                 ),
             )
 
@@ -424,30 +479,53 @@ async def msg_discount_code(message: Message, state: FSMContext) -> None:
             await message.answer(f"❌ {err_msg}")
             return
         plan = await get_plan(session, plan_id)
-        wallet_usdt = await _get_wallet_balance(session, message.from_user) if message.from_user else 0.0
+        wallet_usdt, wallet_toman = await _get_wallet_balances(session, message.from_user) if message.from_user else (0.0, 0)
+        state_data = await state.get_data()
+        plan_chat_id = state_data.get("plan_chat_id")
+        plan_message_id = state_data.get("plan_message_id")
 
+    rate = await _get_usdt_rate()
+    base_toman = _plan_toman_price(plan, rate)
     discount_amount = plan.price_usdt * dc.percent / 100
     final_price = round(plan.price_usdt - discount_amount, 2)
+    final_toman = max(int(round(base_toman * (1 - dc.percent / 100))), 0)
 
     await state.clear()
-    await message.answer(
+    pm = await get_payment_status()
+    text = (
         f"✅ کد تخفیف *{dc.code}* اعمال شد!\n\n"
         f"💲 قیمت اصلی: `${_fmt_usdt(plan.price_usdt)}`\n"
-        f"🏷 تخفیف {dc.percent}٪: `-${_fmt_usdt(discount_amount)}`\n"
-        f"💰 قیمت نهایی: `${_fmt_usdt(final_price)}`\n\n"
-        f"روش پرداخت را انتخاب کنید:",
-        parse_mode="Markdown",
-        reply_markup=get_confirm_after_discount_keyboard(
-            plan_id, code,
-            crypto_on=(await get_payment_status())["crypto"],
-            card_on=(await get_payment_status())["card"],
-            crypto_invoice=(await get_payment_status()).get("crypto_invoice", False),
-            crypto_gateway=(await get_payment_status()).get("crypto_gateway", "nowpayments"),
-            amount=final_price,
-            plan_name=plan.name,
-            wallet_balance_usdt=wallet_usdt,
-        ),
+        f"💳 قیمت اصلی: `{base_toman:,} تومان`\n"
+        f"🏷 تخفیف {dc.percent}٪: `-${_fmt_usdt(discount_amount)}` / `-{int(round(base_toman * dc.percent / 100)):,} تومان`\n"
+        f"💰 قیمت نهایی: `${_fmt_usdt(final_price)}`\n"
+        f"💰 قیمت نهایی: `{final_toman:,} تومان`\n\n"
+        f"روش پرداخت را انتخاب کنید:"
     )
+    markup = get_confirm_after_discount_keyboard(
+        plan_id, code,
+        crypto_on=pm["crypto"],
+        card_on=pm["card"],
+        crypto_invoice=pm.get("crypto_invoice", False),
+        crypto_gateway=pm.get("crypto_gateway", "nowpayments"),
+        amount=final_price,
+        amount_toman=final_toman,
+        plan_name=plan.name,
+        wallet_balance_usdt=wallet_usdt,
+        wallet_balance_toman=wallet_toman,
+    )
+    if plan_message_id and plan_chat_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=plan_chat_id,
+                message_id=plan_message_id,
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=markup,
+            )
+        except Exception:
+            await message.answer(text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        await message.answer(text, parse_mode="Markdown", reply_markup=markup)
 
 
 # ──────────────────────────────────────────────
@@ -473,7 +551,7 @@ async def cb_pay(callback: CallbackQuery) -> None:
         )
 
         if not plan or not plan.is_active:
-            await callback.message.answer("❌ این پلن در دسترس نیست.")
+            await callback.answer("❌ این پلن در دسترس نیست.", show_alert=True)
             return
 
         # اعمال تخفیف
@@ -501,14 +579,15 @@ async def cb_pay(callback: CallbackQuery) -> None:
         except (PaymentError, PaymentAPIError) as e:
             logger.error(f"خطای پرداخت: {e}")
             if not settings.nowpayments_api_key:
-                await callback.message.answer(
+                await _safe_edit_cb(
+                    callback,
                     "⚠️ *درگاه پرداخت تنظیم نشده*\n\n"
                     "برای فعال‌سازی پرداخت، `NOWPAYMENTS_API_KEY` را در `.env` وارد کنید.\n"
                     "تا آن زمان با ادمین تماس بگیرید.",
                     parse_mode="Markdown",
                 )
             else:
-                await callback.message.answer("❌ خطا در ایجاد invoice. لطفاً دوباره تلاش کنید.")
+                await _safe_edit_cb(callback, "❌ خطا در ایجاد invoice. لطفاً دوباره تلاش کنید.")
             return
 
         # ذخیره پرداخت
@@ -536,7 +615,8 @@ async def cb_pay(callback: CallbackQuery) -> None:
         f"⏰ مهلت پرداخت: `{settings.invoice_expire_minutes} دقیقه`\n\n"
         "پس از واریز، دکمه «بررسی پرداخت» را بزنید."
     )
-    await callback.message.answer(
+    await _safe_edit_cb(
+        callback,
         text,
         parse_mode="Markdown",
         reply_markup=get_payment_status_keyboard(order_id),
@@ -571,7 +651,7 @@ async def cb_pay_invoice(callback: CallbackQuery) -> None:
             admin_ids=settings.admin_ids,
         )
         if not plan or not plan.is_active:
-            await callback.message.answer("❌ این پلن در دسترس نیست.")
+            await callback.answer("❌ این پلن در دسترس نیست.", show_alert=True)
             return
 
         final_price = plan.price_usdt
@@ -594,9 +674,7 @@ async def cb_pay_invoice(callback: CallbackQuery) -> None:
             )
         except Exception as e:
             logger.error(f"خطا در ساخت Invoice: {e}")
-            await callback.message.answer(
-                "❌ خطا در ایجاد لینک پرداخت. لطفاً دوباره تلاش کنید."
-            )
+            await _safe_edit_cb(callback, "❌ خطا در ایجاد لینک پرداخت. لطفاً دوباره تلاش کنید.")
             return
 
         # ذخیره در دیتابیس — payment_id خالی چون هنوز پرداخت نشده
@@ -617,7 +695,8 @@ async def cb_pay_invoice(callback: CallbackQuery) -> None:
     kb.button(text="🔄 بررسی پرداخت", callback_data=f"check_inv:{order_id}")
     kb.adjust(1)
 
-    await callback.message.answer(
+    await _safe_edit_cb(
+        callback,
         f"🌐 *پرداخت با کریپتو*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📦 پلن: `{plan.name}`\n"

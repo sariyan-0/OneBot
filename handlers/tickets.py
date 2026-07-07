@@ -6,7 +6,7 @@ FSM: TicketForm (subject → message)
 from __future__ import annotations
 
 from aiogram import F, Router
-from aiogram.filters import StateFilter
+from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
@@ -14,7 +14,8 @@ from loguru import logger
 
 from config import settings
 from database import AsyncSessionLocal
-from database.crud import get_user_by_telegram_id, get_or_create_user
+from database.crud import get_user_by_telegram_id, get_or_create_user, get_setting, set_setting
+from keyboards.main_menu import get_main_menu
 
 
 async def _is_admin(uid: int) -> bool:
@@ -29,6 +30,7 @@ from keyboards.tickets import (
     get_cancel_keyboard,
     get_ticket_detail_keyboard,
     get_ticket_list_keyboard,
+    get_ticket_mode_keyboard,
 )
 from services.tickets import (
     close_user_ticket,
@@ -41,6 +43,85 @@ from services.tickets import (
 )
 
 router = Router(name="tickets")
+_ACTIVE_TICKET_SESSION_KEY = "active_ticket_session_ids"
+_ACTIVE_TICKET_MAP_KEY = "active_ticket_session_map"
+_TICKET_CONTROL_TEXTS = {"✍️ پاسخ", "🔒 بستن تیکت", "🔓 باز کردن مجدد", "🔓 باز کردن تیکت", "🚪 خروج از گفتگو"}
+_MAIN_MENU_TEXTS = {
+    "🛒 خرید کانفیگ",
+    "🎁 اشتراک تست",
+    "📊 اشتراک‌های من",
+    "📥 افزودن اشتراک قدیمی",
+    "👤 پروفایل",
+    "👥 دعوت دوستان",
+    "❓ پشتیبانی",
+    "⚙️ پنل مدیریت",
+}
+_TICKET_MEDIA_LABELS = {
+    "photo": "📷 [عکس]",
+    "video": "🎥 [ویدیو]",
+    "voice": "🎤 [ویس]",
+    "audio": "🎵 [صدا]",
+    "document": "📎 [فایل]",
+    "sticker": "🙂 [استیکر]",
+    "animation": "✨ [گیف]",
+    "video_note": "🎬 [ویدیو نوت]",
+}
+
+
+def _parse_session_ids(raw: str) -> set[int]:
+    ids: set[int] = set()
+    for part in raw.replace("\n", ",").split(","):
+        item = part.strip()
+        if item.isdigit():
+            ids.add(int(item))
+    return ids
+
+
+def _parse_active_ticket_map(raw: str) -> dict[int, int]:
+    result: dict[int, int] = {}
+    for part in raw.replace("\n", ",").split(","):
+        item = part.strip()
+        if ":" not in item:
+            continue
+        user_id, ticket_id = item.split(":", 1)
+        if user_id.isdigit() and ticket_id.isdigit():
+            result[int(user_id)] = int(ticket_id)
+    return result
+
+
+async def _set_ticket_session_state(telegram_id: int, active: bool) -> None:
+    async with AsyncSessionLocal() as session:
+        raw = await get_setting(session, _ACTIVE_TICKET_SESSION_KEY, "")
+        ids = _parse_session_ids(raw)
+        if active:
+            ids.add(telegram_id)
+        else:
+            ids.discard(telegram_id)
+        await set_setting(session, _ACTIVE_TICKET_SESSION_KEY, ",".join(str(x) for x in sorted(ids)))
+
+
+async def _ticket_session_active(telegram_id: int) -> bool:
+    async with AsyncSessionLocal() as session:
+        raw = await get_setting(session, _ACTIVE_TICKET_SESSION_KEY, "")
+    return telegram_id in _parse_session_ids(raw)
+
+
+async def _set_active_ticket_id(telegram_id: int, ticket_id: int | None) -> None:
+    async with AsyncSessionLocal() as session:
+        raw = await get_setting(session, _ACTIVE_TICKET_MAP_KEY, "")
+        mapping = _parse_active_ticket_map(raw)
+        if ticket_id is None:
+            mapping.pop(telegram_id, None)
+        else:
+            mapping[telegram_id] = ticket_id
+        serialized = ",".join(f"{uid}:{tid}" for uid, tid in sorted(mapping.items()))
+        await set_setting(session, _ACTIVE_TICKET_MAP_KEY, serialized)
+
+
+async def _get_active_ticket_id(telegram_id: int) -> int | None:
+    async with AsyncSessionLocal() as session:
+        raw = await get_setting(session, _ACTIVE_TICKET_MAP_KEY, "")
+    return _parse_active_ticket_map(raw).get(telegram_id)
 
 
 # ──────────────────────────────────────────────
@@ -51,6 +132,7 @@ class TicketForm(StatesGroup):
     waiting_subject = State()
     waiting_message = State()
     waiting_reply   = State()
+    viewing_ticket = State()
 
 
 class AdminTicketForm(StatesGroup):
@@ -78,6 +160,20 @@ def _format_ticket(ticket, show_messages: bool = False) -> str:
             who = "👨‍💼 ادمین" if msg.is_admin_reply else "👤 کاربر"
             lines.append(f"\n{who} ({msg.created_at.strftime('%H:%M')}):\n{msg.body}")
     return "\n".join(lines)
+
+
+def _compose_ticket_body(message: Message) -> str | None:
+    text = (message.text or message.caption or "").strip()
+    if text:
+        return text
+
+    content_type = str(getattr(message, "content_type", "") or "")
+    label = _TICKET_MEDIA_LABELS.get(content_type)
+    if label:
+        return label
+    if content_type:
+        return f"📎 [{content_type}]"
+    return None
 
 
 # ──────────────────────────────────────────────
@@ -109,8 +205,8 @@ async def menu_support(event: Message | CallbackQuery) -> None:
     if not tickets:
         text = (
             "❓ *پشتیبانی*\n\n"
-            "هیچ تیکتی ندارید.\n"
-            "روی دکمه زیر کلیک کنید تا تیکت جدید باز کنید:"
+            "هنوز تیکتی ندارید.\n"
+            "برای ثبت تیکت جدید از دکمه زیر استفاده کنید:"
         )
     else:
         text = f"❓ *تیکت‌های شما* ({len(tickets)} تیکت):\n\nیک تیکت را انتخاب کنید:"
@@ -202,7 +298,7 @@ async def fsm_ticket_message(message: Message, state: FSMContext) -> None:
 # ──────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("ticket_view:"))
-async def cb_ticket_view(callback: CallbackQuery) -> None:
+async def cb_ticket_view(callback: CallbackQuery, state: FSMContext) -> None:
     """نمایش پیام‌های یک تیکت."""
     await callback.answer()
     ticket_id = int(callback.data.split(":")[1])  # type: ignore[union-attr]
@@ -226,65 +322,108 @@ async def cb_ticket_view(callback: CallbackQuery) -> None:
         parse_mode="Markdown",
         reply_markup=get_ticket_detail_keyboard(ticket_id, is_closed=(ticket.status == "closed")),
     )
+    await state.set_state(TicketForm.viewing_ticket)
+    await state.update_data(ticket_id=ticket_id, is_closed=(ticket.status == "closed"))
+    if tg_user:
+        await _set_ticket_session_state(tg_user.id, ticket.status != "closed")
+        await _set_active_ticket_id(tg_user.id, ticket_id)
+    await callback.message.answer(  # type: ignore[union-attr]
+        "\u2063",
+        reply_markup=get_ticket_mode_keyboard(is_closed=(ticket.status == "closed")),
+    )
 
 
 # ──────────────────────────────────────────────
 # پاسخ کاربر به تیکت
 # ──────────────────────────────────────────────
 
-@router.callback_query(F.data.startswith("ticket_reply:"))
-async def cb_ticket_reply_start(callback: CallbackQuery, state: FSMContext) -> None:
-    """شروع FSM پاسخ کاربر."""
-    await callback.answer()
-    ticket_id = int(callback.data.split(":")[1])  # type: ignore[union-attr]
-    await state.set_state(TicketForm.waiting_reply)
-    await state.update_data(ticket_id=ticket_id)
-    await callback.message.answer(  # type: ignore[union-attr]
-        f"✍️ *پاسخ به تیکت #{ticket_id}*\n\nپیام خود را بنویسید:",
-        parse_mode="Markdown",
-        reply_markup=get_cancel_keyboard(),
+@router.message(StateFilter(TicketForm.viewing_ticket), F.text == "✍️ پاسخ")
+async def fsm_ticket_reply_start(message: Message, state: FSMContext) -> None:
+    """در حالت گفتگوی تیکت، دکمه پاسخ فقط کیبورد را نگه می‌دارد."""
+    data = await state.get_data()
+    is_closed = bool(data.get("is_closed"))
+    await message.answer(
+        "\u2063",
+        reply_markup=get_ticket_mode_keyboard(is_closed=is_closed),
     )
 
 
-@router.message(StateFilter(TicketForm.waiting_reply))
-async def fsm_user_reply(message: Message, state: FSMContext) -> None:
-    """ذخیره پاسخ کاربر."""
-    data = await state.get_data()
-    ticket_id = data.get("ticket_id")
-    tg_user = message.from_user
+@router.message(StateFilter(TicketForm.viewing_ticket), CommandStart())
+async def fsm_ticket_start_over(message: Message, state: FSMContext) -> None:
+    """/start داخل حالت تیکت، گفتگوی تیکت را می‌بندد و منوی اصلی را برمی‌گرداند."""
     await state.clear()
+    if message.from_user:
+        await _set_ticket_session_state(message.from_user.id, False)
+        await _set_active_ticket_id(message.from_user.id, None)
+        is_admin = await _is_admin(message.from_user.id)
+    else:
+        is_admin = False
+    await message.answer(
+        "🏠 منوی اصلی:",
+        reply_markup=get_main_menu(is_admin=is_admin),
+    )
 
-    async with AsyncSessionLocal() as session:
-        db_user = await get_user_by_telegram_id(session, tg_user.id)  # type: ignore[union-attr]
-        if not db_user:
-            return
-        try:
-            await reply_to_ticket(
-                session, ticket_id, db_user.id, message.text or "", is_admin=False
-            )
-        except ValueError as e:
-            await message.answer(f"❌ {e}")
-            return
 
-    await message.answer(f"✅ پاسخ شما به تیکت #{ticket_id} ارسال شد.")
-    await _notify_admins_user_reply(message.bot, ticket_id, tg_user, message.text or "")
+@router.callback_query(F.data.startswith("ticket_reply:"))
+async def cb_ticket_reply_start(callback: CallbackQuery, state: FSMContext) -> None:
+    """سازگاری با پیام‌های قدیمی inline."""
+    await callback.answer()
+    ticket_id = int(callback.data.split(":")[1])  # type: ignore[union-attr]
+    await state.set_state(TicketForm.viewing_ticket)
+    await state.update_data(ticket_id=ticket_id)
+    if callback.from_user:
+        await _set_ticket_session_state(callback.from_user.id, True)
+        await _set_active_ticket_id(callback.from_user.id, ticket_id)
+    await callback.message.answer(  # type: ignore[union-attr]
+        "\u2063",
+        reply_markup=get_ticket_mode_keyboard(is_closed=False),
+    )
 
 
 # ──────────────────────────────────────────────
 # بستن تیکت توسط کاربر
 # ──────────────────────────────────────────────
 
+@router.message(StateFilter(TicketForm.viewing_ticket), F.text == "🔒 بستن تیکت")
+async def fsm_ticket_close(message: Message, state: FSMContext) -> None:
+    """بستن تیکت توسط کاربر از روی کیبورد پایین صفحه."""
+    data = await state.get_data()
+    ticket_id = data.get("ticket_id")
+    if not ticket_id:
+        await message.answer("❌ تیکت فعالی پیدا نشد.", reply_markup=get_main_menu())
+        return
+    async with AsyncSessionLocal() as session:
+        await close_user_ticket(session, ticket_id)
+    await state.clear()
+    if message.from_user:
+        await _set_ticket_session_state(message.from_user.id, False)
+        await _set_active_ticket_id(message.from_user.id, None)
+        is_admin = await _is_admin(message.from_user.id)
+    else:
+        is_admin = False
+    await message.answer(
+        f"✅ تیکت #{ticket_id} بسته شد.\n🏠 برگشتیم به منوی اصلی.",
+        reply_markup=get_main_menu(is_admin=is_admin),
+    )
+
+
 @router.callback_query(F.data.startswith("ticket_close:"))
 async def cb_ticket_close(callback: CallbackQuery) -> None:
-    """بستن تیکت توسط کاربر."""
+    """سازگاری با پیام‌های قدیمی inline."""
     await callback.answer()
     ticket_id = int(callback.data.split(":")[1])  # type: ignore[union-attr]
     async with AsyncSessionLocal() as session:
         await close_user_ticket(session, ticket_id)
+    if callback.from_user:
+        await _set_ticket_session_state(callback.from_user.id, False)
+        await _set_active_ticket_id(callback.from_user.id, None)
+        is_admin = await _is_admin(callback.from_user.id)
+    else:
+        is_admin = False
     await callback.message.answer(  # type: ignore[union-attr]
         f"✅ تیکت #{ticket_id} بسته شد.\n"
-        "اگر مشکل مجدداً پیش آمد می‌توانید تیکت را دوباره باز کنید.",
-        reply_markup=get_ticket_detail_keyboard(ticket_id, is_closed=True),
+        "🏠 برگشتیم به منوی اصلی.",
+        reply_markup=get_main_menu(is_admin=is_admin),
     )
 
 
@@ -292,24 +431,28 @@ async def cb_ticket_close(callback: CallbackQuery) -> None:
 # بازگشایی تیکت بسته (کاربر)
 # ──────────────────────────────────────────────
 
-@router.callback_query(F.data.startswith("ticket_reopen:"))
-async def cb_ticket_reopen(callback: CallbackQuery) -> None:
+@router.message(StateFilter(TicketForm.viewing_ticket), F.text == "🔓 باز کردن مجدد")
+@router.message(StateFilter(TicketForm.viewing_ticket), F.text == "🔓 باز کردن تیکت")
+async def fsm_ticket_reopen(message: Message, state: FSMContext) -> None:
     """کاربر تیکت بسته را دوباره باز می‌کند."""
-    await callback.answer()
-    ticket_id = int(callback.data.split(":")[1])  # type: ignore[union-attr]
+    data = await state.get_data()
+    ticket_id = data.get("ticket_id")
+    if not ticket_id:
+        await message.answer("❌ تیکت فعالی پیدا نشد.", reply_markup=get_main_menu())
+        return
     async with AsyncSessionLocal() as session:
         await reopen_ticket(session, ticket_id)
-    await callback.message.answer(  # type: ignore[union-attr]
-        f"🔓 تیکت #{ticket_id} دوباره باز شد.\n"
-        "می‌توانید پیام جدید ارسال کنید:",
-        reply_markup=get_ticket_detail_keyboard(ticket_id, is_closed=False),
-    )
+    await state.update_data(is_closed=False)
+    if message.from_user:
+        await _set_ticket_session_state(message.from_user.id, True)
+        await _set_active_ticket_id(message.from_user.id, ticket_id)
+    await message.answer("\u2063", reply_markup=get_ticket_mode_keyboard(is_closed=False))
     # اطلاع به ادمین
-    tg_user = callback.from_user
+    tg_user = message.from_user
     if tg_user:
         for admin_id in settings.admin_ids:
             try:
-                await callback.bot.send_message(  # type: ignore[union-attr]
+                await message.bot.send_message(
                     admin_id,
                     f"🔓 *تیکت #{ticket_id} دوباره باز شد*\n"
                     f"👤 توسط: {tg_user.first_name or ''} `{tg_user.id}`",
@@ -318,6 +461,22 @@ async def cb_ticket_reopen(callback: CallbackQuery) -> None:
                 )
             except Exception:
                 pass
+
+
+@router.callback_query(F.data.startswith("ticket_reopen:"))
+async def cb_ticket_reopen(callback: CallbackQuery) -> None:
+    """سازگاری با پیام‌های قدیمی inline."""
+    await callback.answer()
+    ticket_id = int(callback.data.split(":")[1])  # type: ignore[union-attr]
+    async with AsyncSessionLocal() as session:
+        await reopen_ticket(session, ticket_id)
+    if callback.from_user:
+        await _set_ticket_session_state(callback.from_user.id, True)
+        await _set_active_ticket_id(callback.from_user.id, ticket_id)
+    await callback.message.answer(  # type: ignore[union-attr]
+        "\u2063",
+        reply_markup=get_ticket_mode_keyboard(is_closed=False),
+    )
 
 
 # ──────────────────────────────────────────────
@@ -329,7 +488,127 @@ async def cb_ticket_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     """لغو عملیات جاری FSM."""
     await state.clear()
     await callback.answer("❌ لغو شد.")
+    if callback.from_user and await _ticket_session_active(callback.from_user.id):
+        await _set_ticket_session_state(callback.from_user.id, False)
+        await _set_active_ticket_id(callback.from_user.id, None)
+        is_admin = await _is_admin(callback.from_user.id)
+        await callback.message.answer(  # type: ignore[union-attr]
+            "عملیات لغو شد. می‌توانید از منو ادامه دهید.",
+            reply_markup=get_main_menu(is_admin=is_admin),
+        )
+        return
     await callback.message.answer("عملیات لغو شد. می‌توانید از منو ادامه دهید.")  # type: ignore[union-attr]
+
+
+@router.message(StateFilter(TicketForm.viewing_ticket), F.text == "🚪 خروج از گفتگو")
+async def fsm_ticket_exit(message: Message, state: FSMContext) -> None:
+    """خروج از گفتگوی تیکت و برگشت به منوی اصلی."""
+    await state.clear()
+    if message.from_user:
+        await _set_ticket_session_state(message.from_user.id, False)
+        await _set_active_ticket_id(message.from_user.id, None)
+    async with AsyncSessionLocal() as session:
+        db_user = await get_user_by_telegram_id(session, message.from_user.id)  # type: ignore[union-attr]
+    is_admin = db_user.is_admin if db_user else False
+    await message.answer("🏠 منوی اصلی:", reply_markup=get_main_menu(is_admin=is_admin))
+
+
+@router.callback_query(F.data == "ticket_exit")
+async def cb_ticket_exit(callback: CallbackQuery, state: FSMContext) -> None:
+    """سازگاری با خروج inline در پیام‌های قدیمی."""
+    await callback.answer()
+    await state.clear()
+    if callback.from_user:
+        await _set_ticket_session_state(callback.from_user.id, False)
+        await _set_active_ticket_id(callback.from_user.id, None)
+    async with AsyncSessionLocal() as session:
+        db_user = await get_user_by_telegram_id(session, callback.from_user.id)  # type: ignore[union-attr]
+    is_admin = db_user.is_admin if db_user else False
+    await callback.message.answer(  # type: ignore[union-attr]
+        "🏠 منوی اصلی:",
+        reply_markup=get_main_menu(is_admin=is_admin),
+    )
+
+
+@router.message(StateFilter(TicketForm.viewing_ticket))
+async def fsm_ticket_live_forward(message: Message, state: FSMContext) -> None:
+    """هر پیام غیرکنترلی در حالت تیکت مستقیماً به همان تیکت ارسال می‌شود."""
+    tg_user = message.from_user
+    if not tg_user:
+        return
+    if not await _ticket_session_active(tg_user.id):
+        return
+    if message.text and message.text.startswith("/"):
+        return
+    if message.text in _MAIN_MENU_TEXTS:
+        await state.clear()
+        await _set_ticket_session_state(tg_user.id, False)
+        await _set_active_ticket_id(tg_user.id, None)
+
+        if message.text == "🛒 خرید کانفیگ":
+            from handlers.shop import msg_buy
+            await msg_buy(message)
+            return
+        if message.text == "🎁 اشتراک تست":
+            from handlers.shop import msg_test_sub
+            await msg_test_sub(message)
+            return
+        if message.text == "📊 اشتراک‌های من":
+            from handlers.user import menu_my_subscriptions
+            await menu_my_subscriptions(message)
+            return
+        if message.text == "📥 افزودن اشتراک قدیمی":
+            from handlers.uuid_import import msg_uuid_entry
+            await msg_uuid_entry(message, state)
+            return
+        if message.text == "👤 پروفایل":
+            from handlers.user import menu_profile
+            await menu_profile(message)
+            return
+        if message.text == "👥 دعوت دوستان":
+            from handlers.referral import menu_referral
+            await menu_referral(message)
+            return
+        if message.text == "❓ پشتیبانی":
+            await menu_support(message)
+            return
+        if message.text == "⚙️ پنل مدیریت":
+            from handlers.admin import msg_admin_panel
+            await msg_admin_panel(message)
+            return
+    if message.text in _TICKET_CONTROL_TEXTS:
+        return
+
+    body = _compose_ticket_body(message)
+    if not body:
+        return
+
+    data = await state.get_data()
+    ticket_id = data.get("ticket_id")
+    if not ticket_id:
+        ticket_id = await _get_active_ticket_id(tg_user.id)
+        if not ticket_id:
+            await message.answer("❌ تیکت فعالی پیدا نشد.", reply_markup=get_main_menu())
+            return
+        await state.update_data(ticket_id=ticket_id, is_closed=False)
+
+    async with AsyncSessionLocal() as session:
+        db_user = await get_user_by_telegram_id(session, tg_user.id)  # type: ignore[union-attr]
+        if not db_user:
+            return
+        try:
+            await reply_to_ticket(
+                session,
+                ticket_id,
+                db_user.id,
+                body,
+                is_admin=False,
+            )
+        except ValueError as e:
+            await message.answer(f"❌ {e}")
+            return
+
+    await _notify_admins_user_reply(message.bot, ticket_id, tg_user, body)
 
 
 # ──────────────────────────────────────────────
@@ -547,16 +826,27 @@ async def _notify_user_admin_replied(bot, ticket, reply_text: str) -> None:
             return
         telegram_id = user.telegram_id
 
+    last_user_message = ""
+    if hasattr(ticket, "messages") and ticket.messages:
+        for msg in reversed(ticket.messages):
+            if not msg.is_admin_reply:
+                last_user_message = msg.body
+                break
+
     text = (
         f"📨 *پاسخ پشتیبانی برای تیکت #{ticket.id}*\n\n"
         f"📌 موضوع: {ticket.subject}\n\n"
-        f"💬 پاسخ ادمین:\n{reply_text[:500]}"
+        + (f"👤 پیام شما:\n{last_user_message[:400]}\n\n" if last_user_message else "")
+        + f"💬 پاسخ ادمین:\n{reply_text[:500]}"
     )
     try:
-        await bot.send_message(
-            telegram_id, text, parse_mode="Markdown",
-            reply_markup=get_ticket_detail_keyboard(ticket.id),
-        )
+        await _set_ticket_session_state(telegram_id, True)
+        await _set_active_ticket_id(telegram_id, ticket.id)
+        kwargs = {
+            "parse_mode": "Markdown",
+            "reply_markup": get_ticket_mode_keyboard(is_closed=False),
+        }
+        await bot.send_message(telegram_id, text, **kwargs)
     except Exception as e:
         logger.warning(f"ارسال نوتیف به کاربر {telegram_id} ناموفق: {e}")
 
@@ -577,13 +867,16 @@ async def _notify_user_ticket_closed(bot, ticket) -> None:
     if not tg_id:
         return
     try:
+        await _set_ticket_session_state(tg_id, False)
+        await _set_active_ticket_id(tg_id, None)
+        is_admin = await _is_admin(tg_id)
         await bot.send_message(
             tg_id,
             f"✅ *تیکت #{ticket.id} بسته شد*\n"
             f"📌 موضوع: {ticket.subject}\n\n"
-            "اگر مشکل حل نشده یا سوال جدیدی دارید، می‌توانید تیکت را دوباره باز کنید.",
+            "گفتگو بسته شد و منوی اصلی برگردانده شد.",
             parse_mode="Markdown",
-            reply_markup=get_ticket_detail_keyboard(ticket.id, is_closed=True),
+            reply_markup=get_main_menu(is_admin=is_admin),
         )
     except Exception as e:
         logger.warning(f"ارسال نوتیف بستن تیکت ناموفق: {e}")
@@ -595,13 +888,14 @@ async def _notify_user_ticket_reopened(bot, ticket) -> None:
     if not tg_id:
         return
     try:
+        await _set_ticket_session_state(tg_id, True)
         await bot.send_message(
             tg_id,
             f"🔓 *تیکت #{ticket.id} توسط ادمین دوباره باز شد*\n"
             f"📌 موضوع: {ticket.subject}\n\n"
             "می‌توانید ادامه مکالمه را دنبال کنید.",
             parse_mode="Markdown",
-            reply_markup=get_ticket_detail_keyboard(ticket.id, is_closed=False),
+            reply_markup=get_ticket_mode_keyboard(is_closed=False),
         )
     except Exception as e:
         logger.warning(f"ارسال نوتیف بازگشایی تیکت ناموفق: {e}")

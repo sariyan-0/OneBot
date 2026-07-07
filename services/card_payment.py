@@ -7,6 +7,7 @@ services/card_payment.py — مدیریت پرداخت کارت به کارت
   • محاسبه مبلغ ریالی برای نمایش به کاربر
 """
 from __future__ import annotations
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
 CARD_NUMBER_KEY = "card_number"
@@ -24,10 +25,13 @@ async def get_card_info() -> dict:
         number = await get_setting(session, CARD_NUMBER_KEY, "")
         holder = await get_setting(session, CARD_HOLDER_KEY, "")
         rate   = await get_setting(session, USDT_TO_TOMAN_KEY, str(DEFAULT_RATE))
+    parsed_rate = int(rate) if rate.isdigit() else DEFAULT_RATE
+    if parsed_rate <= 0:
+        parsed_rate = DEFAULT_RATE
     return {
         "number": number,
         "holder": holder,
-        "rate":   int(rate) if rate.isdigit() else DEFAULT_RATE,
+        "rate":   parsed_rate,
     }
 
 
@@ -56,6 +60,22 @@ def calc_rial_amount(usdt_amount: float, rate_toman: int) -> tuple[int, int]:
     toman = int(usdt_amount * rate_toman)
     rial  = toman * 10
     return rial, toman
+
+
+def usdt_amount_from_toman(amount_toman: int, rate_toman: int) -> float:
+    """تبدیل دقیق‌تر تومان به USDT برای ذخیره در کیف پول."""
+    if amount_toman <= 0 or rate_toman <= 0:
+        return 0.0
+    value = Decimal(amount_toman) / Decimal(rate_toman)
+    return float(value.quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP))
+
+
+def toman_from_usdt(amount_usdt: float, rate_toman: int) -> int:
+    """تبدیل USDT به تومان با گرد کردن درست برای نمایش."""
+    if amount_usdt <= 0 or rate_toman <= 0:
+        return 0
+    value = Decimal(str(amount_usdt)) * Decimal(rate_toman)
+    return int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def fmt_card_number(raw: str) -> str:

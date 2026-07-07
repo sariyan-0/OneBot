@@ -31,6 +31,7 @@
 - هشدار خودکار انقضا: ۷ روز، ۳ روز و ۱ روز قبل
 
 **پنل ادمین**
+- رابط مدیریت وب به Next.js منتقل شده و از مسیر `/admin` سرو می‌شود
 - مدیریت کامل پلن‌ها، اینباندها، کدهای تخفیف
 - آمار درآمد، کاربران، اشتراک‌ها و تراکنش‌ها
 - تأیید/رد پرداخت‌های کارت به کارت
@@ -71,6 +72,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/sariyan-0/OneBot/main/instal
 ```
 
 اسکریپت نصب به‌صورت تعاملی تمام تنظیمات را می‌پرسد و Docker را نیز در صورت نیاز نصب می‌کند.
+پس از نصب، پنل وب در `https://YOUR_DOMAIN/admin` و وبهوک‌ها در `/webhook/*` در دسترس هستند.
 
 ---
 
@@ -82,6 +84,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/sariyan-0/OneBot/main/instal
 BOT_TOKEN=توکن_ربات
 ADMIN_IDS=آیدی_عددی_تلگرام
 ADMIN_SECRET=رمز_ورود_ادمین
+WEB_ADMIN_USERNAME=admin
+WEB_ADMIN_PASSWORD=admin
 
 PANEL_URL=https://your-server.com:8443/webBasePath
 PANEL_USERNAME=admin
@@ -114,6 +118,7 @@ bot/
 ├── onebot                  ابزار مدیریت CLI
 ├── docker-compose.yml
 ├── Dockerfile.bot
+├── web-panel/              Next.js admin panel
 ├── config.py               تنظیمات مرکزی (Pydantic v2)
 ├── main.py                 نقطه ورود + APScheduler
 ├── database/               SQLAlchemy 2.0 Async

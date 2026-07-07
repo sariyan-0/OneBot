@@ -45,36 +45,43 @@ def _fmt_usdt(price: float) -> str:
     return formatted
 
 
-def _plan_label(plan: Plan, rate: int = 0) -> str:
+def _plan_label(plan: Plan, rate: int = 0, show_crypto_price: bool = True, show_toman_price: bool = True) -> str:
     """
     متن دکمه پلن — واضح، کوتاه، کاملاً فارسی.
     اگر rate > 0 قیمت تومانی هم در کنار دلاری نمایش داده می‌شود.
-    مثال حجمی:    📦  ۱۰ گیگ  ◈  ۳۰ روزه  ◈  ۳$  (۲۷۰,۰۰۰ت)
-    مثال نامحدود: ♾  نامحدود — یک کاربره  ◈  ۳۰ روزه  ◈  ۱۰$  (۹۰۰,۰۰۰ت)
+    مثال حجمی:    ۱۰ گیگ  ◈  ۳۰ روزه  ◈  ۳$
+    مثال نامحدود: نامحدود — یک کاربره  ◈  ۳۰ روزه  ◈  ۱۰$
     """
     if plan.traffic_gb == 0:
         if plan.limit_ip and plan.limit_ip > 0:
             user_label = _FARSI_USERS.get(plan.limit_ip, f"{plan.limit_ip} کاربره")
-            traffic_part = f"♾  نامحدود — {user_label}"
+            traffic_part = f"نامحدود — {user_label}"
         else:
-            traffic_part = "♾  نامحدود"
+            traffic_part = "نامحدود"
     else:
-        traffic_part = f"📦  {plan.traffic_gb} گیگ"
+        traffic_part = f"{plan.traffic_gb} گیگ"
 
     price_str = _fmt_usdt(plan.price_usdt)
     price_toman = getattr(plan, "price_toman", 0) or 0
-    if price_toman > 0:
+    if not show_toman_price or price_toman <= 0:
+        price_part = f"${price_str}"
+    elif price_toman > 0 and not show_crypto_price:
+        price_part = f"{price_toman:,} تومان".replace(",", "،")
+    else:
         toman_str = f"{price_toman:,}".replace(",", "،")
         price_part = f"{toman_str} تومان (${price_str})"
-    else:
-        price_part = f"${price_str}"
     return f"{traffic_part}  ◈  {plan.duration_days} روزه  ◈  {price_part}"
 
 
-def get_plans_keyboard(plans: List[Plan], rate: int = 0) -> InlineKeyboardMarkup:
+def get_plans_keyboard(
+    plans: List[Plan],
+    rate: int = 0,
+    show_crypto_price: bool = True,
+    show_toman_price: bool = True,
+) -> InlineKeyboardMarkup:
     """
     Inline keyboard مرتب از لیست پلن‌ها.
-    پلن‌های حجمی و نامحدود با جداکننده از هم تفکیک می‌شوند.
+    اگر هر دو نوع پلن موجود باشند، حجمی و نامحدود جدا نمایش داده می‌شوند.
     rate: نرخ $ به تومان — اگر صفر باشد فقط $ نمایش داده می‌شود.
     """
     builder = InlineKeyboardBuilder()
@@ -87,22 +94,26 @@ def get_plans_keyboard(plans: List[Plan], rate: int = 0) -> InlineKeyboardMarkup
     limited = [p for p in plans if p.traffic_gb > 0]
     unlimited = [p for p in plans if p.traffic_gb == 0]
 
+    show_sections = bool(limited and unlimited)
+
     if limited:
-        builder.row(InlineKeyboardButton(
-            text="📦  پلن‌های حجمی", callback_data="no_plans"
-        ))
+        if show_sections:
+            builder.row(InlineKeyboardButton(
+                text="پلن‌های حجمی", callback_data="no_plans"
+            ))
         for plan in limited:
             builder.row(InlineKeyboardButton(
-                text=_plan_label(plan, rate), callback_data=f"plan:{plan.id}"
+                text=_plan_label(plan, rate, show_crypto_price=show_crypto_price, show_toman_price=show_toman_price), callback_data=f"plan:{plan.id}"
             ))
 
     if unlimited:
-        builder.row(InlineKeyboardButton(
-            text="♾  پلن‌های نامحدود", callback_data="no_plans"
-        ))
+        if show_sections:
+            builder.row(InlineKeyboardButton(
+                text="پلن‌های نامحدود", callback_data="no_plans"
+            ))
         for plan in unlimited:
             builder.row(InlineKeyboardButton(
-                text=_plan_label(plan, rate), callback_data=f"plan:{plan.id}"
+                text=_plan_label(plan, rate, show_crypto_price=show_crypto_price, show_toman_price=show_toman_price), callback_data=f"plan:{plan.id}"
             ))
 
     builder.row(InlineKeyboardButton(text="🔙 بازگشت به منو", callback_data="back_main"))
@@ -117,21 +128,34 @@ def get_plan_confirm_keyboard(
     crypto_invoice: bool = False,
     crypto_gateway: str = "nowpayments",   # "nowpayments" | "maxelpay"
     amount: float = 0.0,
+    amount_toman: int = 0,
     plan_name: str = "",
     flow: str = "new",
     target_sub_id: int = 0,
     wallet_balance_usdt: float = 0.0,
+    wallet_balance_toman: int = 0,
 ) -> InlineKeyboardMarkup:
     """انتخاب روش پرداخت — فقط روش‌های فعال نمایش داده می‌شوند."""
     builder = InlineKeyboardBuilder()
     dc_suffix = f":{discount_code}" if discount_code else ""
     flow_suffix = ""
-    wallet_ready = wallet_balance_usdt >= amount and amount > 0
+    wallet_ready_usd = wallet_balance_usdt >= amount and amount > 0
+    wallet_ready_toman = wallet_balance_toman >= amount_toman and amount_toman > 0
 
-    if wallet_ready:
+    if wallet_ready_usd and wallet_ready_toman:
         builder.button(
-            text=f"💼 پرداخت با کیف پول (${amount:.2f})",
-            callback_data=f"walletpay:{flow}:{target_sub_id}:{plan_id}:{amount:.2f}",
+            text="💼 پرداخت با کیف پول",
+            callback_data=f"walletpay_select:{flow}:{target_sub_id}:{plan_id}:{amount:.2f}:{amount_toman}",
+        )
+    elif wallet_ready_toman:
+        builder.button(
+            text=f"💼 پرداخت با کیف پول تومان ({amount_toman:,} تومان)",
+            callback_data=f"walletpay:toman:{flow}:{target_sub_id}:{plan_id}:{amount:.2f}:{amount_toman}",
+        )
+    elif wallet_ready_usd:
+        builder.button(
+            text=f"💼 پرداخت با کیف پول دلار (${amount:.2f})",
+            callback_data=f"walletpay:usd:{flow}:{target_sub_id}:{plan_id}:{amount:.2f}:{amount_toman}",
         )
 
     if flow != "new":
@@ -201,18 +225,31 @@ def get_confirm_after_discount_keyboard(
     crypto_invoice: bool = False,
     crypto_gateway: str = "nowpayments",
     amount: float = 0.0,
+    amount_toman: int = 0,
     plan_name: str = "",
     flow: str = "new",
     target_sub_id: int = 0,
     wallet_balance_usdt: float = 0.0,
+    wallet_balance_toman: int = 0,
 ) -> InlineKeyboardMarkup:
     """انتخاب روش پرداخت بعد از اعمال کد تخفیف."""
     builder = InlineKeyboardBuilder()
-    wallet_ready = wallet_balance_usdt >= amount and amount > 0
-    if wallet_ready:
+    wallet_ready_usd = wallet_balance_usdt >= amount and amount > 0
+    wallet_ready_toman = wallet_balance_toman >= amount_toman and amount_toman > 0
+    if wallet_ready_usd and wallet_ready_toman:
         builder.button(
-            text=f"💼 پرداخت با کیف پول (${amount:.2f})",
-            callback_data=f"walletpay:{flow}:{target_sub_id}:{plan_id}:{amount:.2f}",
+            text="💼 پرداخت با کیف پول",
+            callback_data=f"walletpay_select:{flow}:{target_sub_id}:{plan_id}:{amount:.2f}:{amount_toman}",
+        )
+    elif wallet_ready_toman:
+        builder.button(
+            text=f"💼 پرداخت با کیف پول تومان ({amount_toman:,} تومان)",
+            callback_data=f"walletpay:toman:{flow}:{target_sub_id}:{plan_id}:{amount:.2f}:{amount_toman}",
+        )
+    elif wallet_ready_usd:
+        builder.button(
+            text=f"💼 پرداخت با کیف پول دلار (${amount:.2f})",
+            callback_data=f"walletpay:usd:{flow}:{target_sub_id}:{plan_id}:{amount:.2f}:{amount_toman}",
         )
     if flow != "new":
         if crypto_on:
@@ -270,10 +307,71 @@ def get_payment_status_keyboard(order_id: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_wallet_currency_keyboard(
+    flow: str,
+    target_sub_id: int,
+    plan_id: int,
+    amount_usd: float,
+    amount_toman: int,
+    wallet_balance_usdt: float = 0.0,
+    wallet_balance_toman: int = 0,
+) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if wallet_balance_usdt >= amount_usd and amount_usd > 0:
+        builder.button(
+            text=f"💼 دلار (${amount_usd:.2f})",
+            callback_data=f"walletpay:usd:{flow}:{target_sub_id}:{plan_id}:{amount_usd:.2f}:{amount_toman}",
+        )
+    if wallet_balance_toman >= amount_toman and amount_toman > 0:
+        builder.button(
+            text=f"💼 تومان ({amount_toman:,} تومان)",
+            callback_data=f"walletpay:toman:{flow}:{target_sub_id}:{plan_id}:{amount_usd:.2f}:{amount_toman}",
+        )
+    builder.button(text="❌ انصراف", callback_data=f"walletpay_cancel:{flow}:{target_sub_id}:{plan_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 # ── سازگاری با handler قدیمی ──────────────────
-def get_plan_detail_keyboard(plan_id: int, wallet_balance_usdt: float = 0.0) -> InlineKeyboardMarkup:
-    return get_plan_confirm_keyboard(plan_id, wallet_balance_usdt=wallet_balance_usdt)
+def get_plan_detail_keyboard(
+    plan_id: int,
+    amount: float = 0.0,
+    amount_toman: int = 0,
+    plan_name: str = "",
+    flow: str = "new",
+    target_sub_id: int = 0,
+    wallet_balance_usdt: float = 0.0,
+    wallet_balance_toman: int = 0,
+) -> InlineKeyboardMarkup:
+    return get_plan_confirm_keyboard(
+        plan_id,
+        amount=amount,
+        amount_toman=amount_toman,
+        plan_name=plan_name,
+        flow=flow,
+        target_sub_id=target_sub_id,
+        wallet_balance_usdt=wallet_balance_usdt,
+        wallet_balance_toman=wallet_balance_toman,
+    )
 
 
-def get_confirm_purchase_keyboard(plan_id: int, wallet_balance_usdt: float = 0.0) -> InlineKeyboardMarkup:
-    return get_plan_confirm_keyboard(plan_id, wallet_balance_usdt=wallet_balance_usdt)
+def get_confirm_purchase_keyboard(
+    plan_id: int,
+    amount: float = 0.0,
+    amount_toman: int = 0,
+    plan_name: str = "",
+    flow: str = "new",
+    target_sub_id: int = 0,
+    wallet_balance_usdt: float = 0.0,
+    wallet_balance_toman: int = 0,
+) -> InlineKeyboardMarkup:
+    return get_plan_confirm_keyboard(
+        plan_id,
+        amount=amount,
+        amount_toman=amount_toman,
+        plan_name=plan_name,
+        flow=flow,
+        target_sub_id=target_sub_id,
+        wallet_balance_usdt=wallet_balance_usdt,
+        wallet_balance_toman=wallet_balance_toman,
+    )

@@ -49,7 +49,7 @@ from database.crud import (
 )
 from database.models import Payment, Plan, Subscription, TestSubscriptionRecord, Ticket, User
 from services.activity_log import ActivityLoggingBot, get_recent_activity_logs
-from services.subscription import create_new_subscription, rotate_subscription_link
+from services.subscription import create_new_subscription, rotate_subscription_link, delete_subscription_completely
 from services.blocked_users import get_blocked_user_ids, set_user_blocked
 from services.xui_api import XUIClient, XUIError, build_sub_link_for
 
@@ -1260,13 +1260,7 @@ async def customer_remove_subscription(request: web.Request) -> web.Response:
             ).scalar_one_or_none()
             if not sub:
                 _redirect(f"/admin/customers/{user_id}", err="Subscription not found")
-            try:
-                await _delete_subscription_from_panel(sub)
-            except XUIError as exc:
-                if not _is_missing_panel_client_error(exc):
-                    raise
-            await session.delete(sub)
-            await session.commit()
+            await delete_subscription_completely(session, sub)
         _redirect(f"/admin/customers/{user_id}", msg="Subscription removed from panel and bot database")
     except Exception as exc:
         _redirect(f"/admin/customers/{user_id}", err=f"Could not remove subscription: {exc}")

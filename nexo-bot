@@ -12,6 +12,7 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 BOT_DIR="$(dirname "$SCRIPT_PATH")"
 ENV_FILE="$BOT_DIR/.env"
 COMPOSE_FILE="$BOT_DIR/docker-compose.yml"
+BOT_DB_PATH="$BOT_DIR/data/bot_data.db"
 export COMPOSE_PROJECT_NAME="onebot"
 
 # ── Colors ───────────────────────────────────────────────────
@@ -67,7 +68,7 @@ _require_compose() {
 }
 
 _status_bar() {
-  local bot_status db_status db_mode
+  local bot_status db_status db_mode web_status
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq "^(onebot_bot|nexora_bot)$"; then
     bot_status="${GREEN}● Running${RESET}"
   else
@@ -82,9 +83,18 @@ _status_bar() {
     fi
   else
     db_mode="SQLite"
-    db_status="${CYAN}● (file)${RESET}"
+    if [[ -f "$BOT_DB_PATH" ]]; then
+      db_status="${GREEN}● file${RESET}"
+    else
+      db_status="${YELLOW}● missing${RESET}"
+    fi
   fi
-  echo -e "  Bot: $bot_status    DB ($db_mode): $db_status"
+  if systemctl is-active onebot-web >/dev/null 2>&1; then
+    web_status="${GREEN}● Running${RESET}"
+  else
+    web_status="${RED}● Stopped${RESET}"
+  fi
+  echo -e "  Bot: $bot_status    Web: $web_status    DB ($db_mode): $db_status"
   _line
 }
 
@@ -220,11 +230,11 @@ _menu_database() {
       case $ch in
         1)
           local vol_path
-          vol_path=$(docker volume inspect onebot_bot_data --format '{{.Mountpoint}}' 2>/dev/null || docker volume inspect nexora_bot_data --format '{{.Mountpoint}}' 2>/dev/null || echo "N/A")
+          vol_path="$BOT_DB_PATH"
           echo ""
           _info "Volume path: $vol_path"
-          if [[ "$vol_path" != "N/A" && -f "$vol_path/bot_data.db" ]]; then
-            ls -lh "$vol_path/bot_data.db"
+          if [[ -f "$vol_path" ]]; then
+            ls -lh "$vol_path"
           else
             _info "SQLite file not yet created (bot hasn't started, or path differs)."
           fi
@@ -289,12 +299,12 @@ _backup_full() {
       && _ok "Database: $dump" || _err "pg_dump failed."
   else
     local vol_path
-    vol_path=$(docker volume inspect onebot_bot_data --format '{{.Mountpoint}}' 2>/dev/null || docker volume inspect nexora_bot_data --format '{{.Mountpoint}}' 2>/dev/null || echo "")
-    if [[ -n "$vol_path" && -f "$vol_path/bot_data.db" ]]; then
+    vol_path="$BOT_DB_PATH"
+    if [[ -f "$vol_path" ]]; then
       local db_dst="/root/onebot_sqlite_${ts}.db"
-      cp "$vol_path/bot_data.db" "$db_dst" && _ok "Database (SQLite): $db_dst"
+      cp "$vol_path" "$db_dst" && _ok "Database (SQLite): $db_dst"
     else
-      _warn "SQLite file not found in Docker volume."
+      _warn "SQLite file not found at $BOT_DB_PATH."
     fi
   fi
 
@@ -343,12 +353,12 @@ _menu_backup() {
             && _ok "Saved: $dump" || _err "pg_dump failed."
         else
           local vol_path
-          vol_path=$(docker volume inspect onebot_bot_data --format '{{.Mountpoint}}' 2>/dev/null || docker volume inspect nexora_bot_data --format '{{.Mountpoint}}' 2>/dev/null || echo "")
-          if [[ -n "$vol_path" && -f "$vol_path/bot_data.db" ]]; then
+          vol_path="$BOT_DB_PATH"
+          if [[ -f "$vol_path" ]]; then
             local dst="/root/onebot_sqlite_$(date +%Y%m%d_%H%M).db"
-            cp "$vol_path/bot_data.db" "$dst" && _ok "Saved: $dst"
+            cp "$vol_path" "$dst" && _ok "Saved: $dst"
           else
-            _warn "SQLite file not found in Docker volume."
+            _warn "SQLite file not found at $BOT_DB_PATH."
           fi
         fi
         _press ;;
@@ -391,6 +401,8 @@ _menu_sysinfo() {
   echo ""
   echo -e "  ${BOLD}Docker volumes:${RESET}"
   docker volume ls --filter name=onebot 2>/dev/null | tail -n +2 | awk '{print "  "$2}' || true
+  echo ""
+  echo -e "  ${BOLD}SQLite file:${RESET}      $BOT_DB_PATH"
   echo ""
   echo -e "  ${BOLD}Bot directory:${RESET}  $BOT_DIR"
   echo -e "  ${BOLD}DB mode:${RESET}        $( _use_postgres && echo "PostgreSQL" || echo "SQLite" )"
@@ -687,6 +699,18 @@ _menu_update() {
     _info "Rebuilding bot image..."
     _dc build --no-cache bot
     _dc up -d --force-recreate bot
+    if [[ -d "$BOT_DIR/web-panel" ]]; then
+      _info "Rebuilding web panel..."
+      cd "$BOT_DIR/web-panel"
+      if [[ -f package-lock.json ]]; then
+        npm ci --no-fund --no-audit
+      else
+        npm install --no-fund --no-audit
+      fi
+      npm run build
+      systemctl restart onebot-web.service 2>/dev/null || true
+      cd "$BOT_DIR"
+    fi
     if [[ "$_stashed" == "true" ]]; then
       _info "Restoring local changes..."
       git -C "$BOT_DIR" stash pop >/dev/null 2>&1 || _warn "Could not fully restore stashed changes. Check git status."
@@ -706,12 +730,13 @@ _menu_admin_reset() {
   local new_user="admin"
   local new_pass
   new_pass="$(_rand_secret 12)"
-  _env_set "WEB_ADMIN_ENABLED" "true"
+  _env_set "WEB_ADMIN_ENABLED" "false"
   _env_set "WEB_ADMIN_USERNAME" "$new_user"
   _env_set "WEB_ADMIN_PASSWORD" "$new_pass"
   _env_set "WEB_ADMIN_COOKIE_SECRET" "$(_rand_secret 32)"
   _require_compose
   _dc up -d --force-recreate bot
+  systemctl restart onebot-web.service 2>/dev/null || true
   echo ""
   _ok "Web admin login reset."
   echo -e "  Username: ${CYAN}${new_user}${RESET}"
@@ -929,6 +954,7 @@ _menu_uninstall() {
   echo -e "  • Bot directory      ($BOT_DIR)"
   echo -e "  • onebot command     (/usr/local/bin/onebot, /usr/local/bin/ONEBOT)"
   echo -e "  • nexo-bot command   (/usr/local/bin/nexo-bot)"
+  echo -e "  • Web panel service   (onebot-web.service)"
   echo ""
   echo -e "  ${RED}${BOLD}THIS CANNOT BE UNDONE.${RESET}"
   _line
@@ -942,6 +968,10 @@ _menu_uninstall() {
   docker rmi onebot-vpn-bot:latest 2>/dev/null || true
   _info "Removing bot directory..."
   rm -rf "$BOT_DIR"
+  systemctl stop onebot-web.service 2>/dev/null || true
+  systemctl disable onebot-web.service 2>/dev/null || true
+  rm -f /etc/systemd/system/onebot-web.service
+  systemctl daemon-reload 2>/dev/null || true
   _info "Removing nexo-bot command..."
   rm -f /usr/local/bin/onebot /usr/local/bin/ONEBOT
   rm -f /usr/local/bin/nexo-bot

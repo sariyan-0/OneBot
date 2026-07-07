@@ -1,0 +1,10 @@
+*.sh text eol=lf
+nexo-bot text eol=lf
+
+# Keep binary assets untouched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary

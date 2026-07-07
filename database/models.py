@@ -43,6 +43,7 @@ class User(Base):
     first_name: Mapped[Optional[str]] = MappedColumn(String(128), nullable=True)
     is_admin: Mapped[bool] = MappedColumn(Boolean, default=False, nullable=False)
     wallet_balance_usdt: Mapped[float] = MappedColumn(Float, default=0.0, nullable=False)
+    wallet_balance_toman: Mapped[int] = MappedColumn(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = MappedColumn(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -68,6 +69,10 @@ class User(Base):
     )
     referrals_made: Mapped[list["Referral"]] = relationship(
         "Referral", back_populates="referrer", foreign_keys="Referral.referrer_id",
+        cascade="all, delete-orphan",
+    )
+    referral_commissions_earned: Mapped[list["ReferralCommission"]] = relationship(
+        "ReferralCommission", back_populates="referrer", foreign_keys="ReferralCommission.referrer_id",
         cascade="all, delete-orphan",
     )
 
@@ -249,6 +254,24 @@ class Referral(Base):
 
     def __repr__(self) -> str:
         return f"<Referral referrer={self.referrer_id} referred={self.referred_id}>"
+
+
+class ReferralCommission(Base):
+    __tablename__ = "referral_commissions"
+
+    id: Mapped[int] = MappedColumn(Integer, primary_key=True, autoincrement=True)
+    referrer_id: Mapped[int] = MappedColumn(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    referred_id: Mapped[int] = MappedColumn(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    payment_id: Mapped[int] = MappedColumn(Integer, ForeignKey("payments.id"), nullable=False, unique=True, index=True)
+    percent: Mapped[float] = MappedColumn(Float, default=0.0, nullable=False)
+    amount_usdt: Mapped[float] = MappedColumn(Float, default=0.0, nullable=False)
+    amount_toman: Mapped[int] = MappedColumn(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = MappedColumn(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    referrer: Mapped["User"] = relationship("User", back_populates="referral_commissions_earned", foreign_keys=[referrer_id])
+
+    def __repr__(self) -> str:
+        return f"<ReferralCommission referrer={self.referrer_id} payment={self.payment_id} usdt={self.amount_usdt}>"
 
 
 # ──────────────────────────────────────────────
