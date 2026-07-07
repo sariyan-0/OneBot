@@ -98,6 +98,55 @@ _status_bar() {
   _line
 }
 
+_refresh_web_service() {
+  local unit_file="/etc/systemd/system/onebot-web.service"
+  local standalone_server="$BOT_DIR/web-panel/.next/standalone/server.js"
+  local exec_start
+  if [[ -f "$standalone_server" ]]; then
+    exec_start="$(command -v node) $standalone_server"
+  else
+    exec_start="$(command -v npm) run start"
+  fi
+
+  cat > "$unit_file" <<EOF
+[Unit]
+Description=ONEBOT Next.js Admin Panel
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$BOT_DIR/web-panel
+Environment=NODE_ENV=production
+Environment=ONEBOT_ROOT=$BOT_DIR
+Environment=PORT=3000
+Environment=HOST=127.0.0.1
+Environment=HOSTNAME=127.0.0.1
+EnvironmentFile=$ENV_FILE
+ExecStart=$exec_start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable onebot-web.service >/dev/null 2>&1 || true
+
+  local standalone_dir="$BOT_DIR/web-panel/.next/standalone"
+  if [[ -d "$standalone_dir" ]]; then
+    mkdir -p "$standalone_dir/.next"
+    rm -rf "$standalone_dir/.next/static" "$standalone_dir/public" 2>/dev/null || true
+    if [[ -d "$BOT_DIR/web-panel/.next/static" ]]; then
+      cp -a "$BOT_DIR/web-panel/.next/static" "$standalone_dir/.next/" 2>/dev/null || true
+    fi
+    if [[ -d "$BOT_DIR/web-panel/public" ]]; then
+      cp -a "$BOT_DIR/web-panel/public" "$standalone_dir/" 2>/dev/null || true
+    fi
+  fi
+}
+
 # ════════════════════════════════════════════════════════════
 #  [1] Bot Control
 # ════════════════════════════════════════════════════════════
@@ -708,6 +757,7 @@ _menu_update() {
         npm install --no-fund --no-audit
       fi
       npm run build
+      _refresh_web_service
       systemctl restart onebot-web.service 2>/dev/null || true
       cd "$BOT_DIR"
     fi
