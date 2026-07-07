@@ -570,19 +570,38 @@ _web_panel_deps_stamp() {
   date +%s
 }
 
+_npm_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf 'x64' ;;
+    aarch64|arm64) printf 'arm64' ;;
+    armv7l) printf 'arm' ;;
+    *) uname -m ;;
+  esac
+}
+
 _ensure_web_panel_dependencies() {
   local deps_stamp
   deps_stamp="$(_web_panel_deps_stamp)"
   local stamp_file="$INSTALL_DIR/web-panel/node_modules/.onebot-web-deps.stamp"
+  local npm_arch
+  npm_arch="$(_npm_arch)"
 
   if [[ -f "$stamp_file" ]] && [[ "$(<"$stamp_file")" == "$deps_stamp" ]]; then
     return 0
   fi
 
+  local npm_env=(env
+    NPM_CONFIG_PROGRESS=false
+    NPM_CONFIG_LOGLEVEL=warn
+    npm_config_platform=linux
+    npm_config_arch="$npm_arch"
+    npm_config_libc=glibc
+  )
+
   if [[ -f package-lock.json ]]; then
-    npm ci --omit=dev --prefer-offline --no-fund --no-audit
+    "${npm_env[@]}" npm ci --omit=dev --prefer-offline --no-fund --no-audit
   else
-    npm install --omit=dev --prefer-offline --no-fund --no-audit
+    "${npm_env[@]}" npm install --omit=dev --prefer-offline --no-fund --no-audit
   fi
 
   mkdir -p node_modules
