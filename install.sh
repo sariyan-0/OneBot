@@ -427,6 +427,7 @@ _write_nginx_proxy() {
 server {
     listen 80 default_server;
     server_name ${domain} _;
+    client_max_body_size 1g;
     location /.well-known/acme-challenge/ { root /var/www/html; }
     location / { return 301 https://\$host\$request_uri; }
 }
@@ -434,7 +435,7 @@ server {
 server {
     listen 443 ssl http2 default_server;
     server_name ${domain} _;
-    client_max_body_size 256m;
+    client_max_body_size 1g;
 
     ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
