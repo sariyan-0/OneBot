@@ -580,9 +580,9 @@ _ensure_web_panel_dependencies() {
   fi
 
   if [[ -f package-lock.json ]]; then
-    npm ci --prefer-offline --no-fund --no-audit
+    npm ci --omit=dev --prefer-offline --no-fund --no-audit
   else
-    npm install --prefer-offline --no-fund --no-audit
+    npm install --omit=dev --prefer-offline --no-fund --no-audit
   fi
 
   mkdir -p node_modules
