@@ -124,7 +124,19 @@ th { color: #dbe7ff; font-size: 13px; font-weight: 650; }
   border-color: rgba(124,58,237,.28);
   box-shadow: inset 2px 0 0 var(--accent);
 }
-.logout-link { margin-top: auto; color: #fecaca; }
+.logout-form { margin-top: auto; }
+.logout-link {
+  margin-top: auto;
+  color: #fecaca;
+  background: transparent;
+  width: 100%;
+  font: inherit;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  text-align: left;
+}
+.logout-button { margin-top: 0; }
 .content { min-width: 0; }
 .topbar {
   min-height: 76px;

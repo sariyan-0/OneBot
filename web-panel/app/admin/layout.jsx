@@ -2,7 +2,6 @@ export const dynamic = "force-dynamic";
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import Link from "next/link";
 import Image from "next/image";
 import { LogOut } from "lucide-react";
 
@@ -64,10 +63,12 @@ export default async function AdminLayout({ children }) {
           </div>
         </div>
         <SidebarNav items={NAV} />
-        <Link href="/api/auth/logout" className="logout-link">
+        <form action="/api/auth/logout" method="post" className="logout-form">
+          <button type="submit" className="logout-link logout-button">
           <LogOut size={18} />
           <span>Logout</span>
-        </Link>
+          </button>
+        </form>
       </aside>
       <div className="content">
         <TopBar panelName={panelName || "ONEBOT"} />
