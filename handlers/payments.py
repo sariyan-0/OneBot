@@ -34,6 +34,14 @@ from utils.qrcode_gen import generate_qr_code
 router = Router(name="payments")
 
 
+def _ensure_aware_dt(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 async def _replace_callback_message(callback: CallbackQuery, text: str, **kwargs) -> None:
     message = callback.message
     if not message:
@@ -567,7 +575,8 @@ async def cb_check_payment(callback: CallbackQuery) -> None:
         return
 
     # بررسی انقضا
-    if payment.expires_at and datetime.now(timezone.utc) > payment.expires_at:
+    payment_expires_at = _ensure_aware_dt(payment.expires_at)
+    if payment_expires_at and datetime.now(timezone.utc) > payment_expires_at:
         async with AsyncSessionLocal() as session:
             await update_payment_status(session, payment.id, "expired")
         await callback.answer("⏰ فاکتور منقضی شده. لطفاً مجدداً خرید کنید.", show_alert=True)

@@ -29,6 +29,14 @@ def _fmt_usdt(price: float) -> str:
     return formatted
 
 
+def _ensure_aware_dt(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _fmt_expiry(expiry_date) -> str:
     """نمایش تاریخ انقضا + روزهای باقی‌مانده.
 
@@ -2948,8 +2956,8 @@ async def _send_payment_card(target, payment, user, sub=None) -> None:
     is_crypto_stale = (
         payment.payment_method in _CRYPTO_METHODS
         and payment.status in ("waiting", "confirming", "pending")
-        and payment.expires_at is not None
-        and payment.expires_at < datetime.now(tz.utc)
+        and (payment_expires_at := _ensure_aware_dt(payment.expires_at)) is not None
+        and payment_expires_at < datetime.now(tz.utc)
     )
     if is_crypto_stale:
         status_fa = "⏰ منقضی (آپدیت نشده)"
