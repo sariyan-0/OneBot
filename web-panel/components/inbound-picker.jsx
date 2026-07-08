@@ -16,6 +16,7 @@ export default function InboundPicker({
   name = "inbound_ids",
   initialValue = "",
   label = "Select inbounds",
+  emptyLabel = "All active inbounds",
   showSummary = false,
   allowMultiple = true,
 }) {
@@ -79,6 +80,9 @@ export default function InboundPicker({
   };
 
   const hiddenValue = selected.join(",");
+  const triggerLabel = selected.length
+    ? `${selected.length} inbound${selected.length === 1 ? "" : "s"} selected`
+    : emptyLabel || label;
 
   return (
     <div className="inbound-picker">
@@ -91,11 +95,13 @@ export default function InboundPicker({
         onClick={() => setOpen(true)}
       >
         <ChevronDown size={16} />
-        {selectedRows.length ? `${selectedRows.length} inbounds selected` : label}
+        {triggerLabel}
       </button>
-      {showSummary && selectedRows.length ? (
+      {showSummary && selected.length ? (
         <div className="muted" style={{ marginTop: 8 }}>
-          {selectedRows.map((inbound) => inbound.remark || `#${inbound.id}`).join(" · ")}
+          {selectedRows.length
+            ? selectedRows.map((inbound) => inbound.remark || `#${inbound.id}`).join(" · ")
+            : selected.map((id) => `#${id}`).join(" · ")}
         </div>
       ) : null}
 
@@ -106,12 +112,19 @@ export default function InboundPicker({
               <div>
                 <h3 style={{ margin: 0 }}>Select inbounds</h3>
                 <div className="muted">
-                  {allowMultiple ? "Pick one or more inbounds for this plan." : "Pick one inbound for this setting."}
+                  {allowMultiple ? "Pick one or more inbounds, or leave empty to allow all active inbounds." : "Pick one inbound for this setting."}
                 </div>
               </div>
-              <button type="button" className="btn secondary" onClick={() => setOpen(false)}>
-                Close
-              </button>
+              <div className="actions" style={{ justifyContent: "flex-end" }}>
+                {allowMultiple ? (
+                  <button type="button" className="btn secondary" onClick={() => setSelected([])}>
+                    Clear
+                  </button>
+                ) : null}
+                <button type="button" className="btn secondary" onClick={() => setOpen(false)}>
+                  Close
+                </button>
+              </div>
             </div>
 
             <div className="form-grid" style={{ marginBottom: 12 }}>

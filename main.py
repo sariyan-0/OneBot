@@ -26,7 +26,7 @@ from loguru import logger
 
 from config import settings
 from database import AsyncSessionLocal, init_db
-from database.crud import create_plan, get_all_plans, get_setting
+from database.crud import create_plan, get_all_plans, get_setting, set_setting
 from handlers.admin import router as admin_router
 from handlers.broadcast import router as broadcast_router
 from handlers.errors import router as error_router
@@ -554,6 +554,18 @@ async def _seed_default_plans() -> None:
         logger.success(f"✅ {len(defaults)} پلن پیش‌فرض ایجاد شد.")
 
 
+async def _configured_bot_username() -> str:
+    configured = settings.bot_username.strip().lstrip("@")
+    try:
+        async with AsyncSessionLocal() as session:
+            db_username = (await get_setting(session, "BOT_USERNAME", "")).strip().lstrip("@")
+            if db_username:
+                configured = db_username
+    except Exception as exc:
+        logger.debug(f"خواندن BOT_USERNAME از دیتابیس ناموفق بود: {exc}")
+    return configured
+
+
 async def _resolve_bot_token() -> str:
     """
     BOT_TOKEN را از admin_settings دیتابیس می‌خواند و اگر خالی بود،
@@ -562,19 +574,83 @@ async def _resolve_bot_token() -> str:
     این باعث می‌شود وقتی توکن از web panel ذخیره می‌شود،
     مقدار جدید حتی اگر .env قدیمی باشد، برنده شود.
     """
+    env_token = settings.bot_token.strip()
+    expected_username = (await _configured_bot_username()).lower()
+
+    async def _probe_token(token: str) -> tuple[str, int] | None:
+        probe_bot: Bot | None = None
+        try:
+            probe_bot = Bot(token=token)
+            me = await probe_bot.get_me()
+            return (me.username or "").lower(), int(me.id)
+        except Exception as exc:
+            logger.warning(f"بررسی BOT_TOKEN ناموفق بود: {exc}")
+            return None
+        finally:
+            if probe_bot is not None:
+                await probe_bot.session.close()
+
     try:
         async with AsyncSessionLocal() as session:
             db_token = (await get_setting(session, "BOT_TOKEN", "")).strip()
             if db_token:
+                if env_token and env_token != db_token:
+                    logger.warning(
+                        "BOT_TOKEN ذخیره‌شده در دیتابیس با BOT_TOKEN محیط/.env متفاوت است. "
+                        "این حالت بعد از انتقال دیتابیس به ربات جدید می‌تواند باعث شود polling روی ربات قبلی اجرا شود."
+                    )
+                    if expected_username:
+                        db_identity = await _probe_token(db_token)
+                        env_identity = await _probe_token(env_token)
+                        db_matches = bool(db_identity and db_identity[0] == expected_username)
+                        env_matches = bool(env_identity and env_identity[0] == expected_username)
+                        if env_matches and not db_matches:
+                            logger.warning(
+                                f"BOT_USERNAME روی @{expected_username} تنظیم شده و فقط توکن محیط با آن تطبیق دارد؛ "
+                                "BOT_TOKEN دیتابیس با مقدار محیط همگام شد."
+                            )
+                            await set_setting(session, "BOT_TOKEN", env_token)
+                            return env_token
+                        if db_matches:
+                            logger.info("BOT_TOKEN دیتابیس با BOT_USERNAME تنظیم‌شده تطبیق دارد؛ همان استفاده می‌شود.")
+                        elif env_identity and not db_identity:
+                            logger.warning("BOT_TOKEN دیتابیس معتبر نبود؛ از BOT_TOKEN محیط استفاده می‌شود.")
+                            await set_setting(session, "BOT_TOKEN", env_token)
+                            return env_token
+                    else:
+                        db_identity = await _probe_token(db_token)
+                        if not db_identity:
+                            env_identity = await _probe_token(env_token)
+                            if env_identity:
+                                logger.warning("BOT_TOKEN دیتابیس معتبر نبود؛ از BOT_TOKEN محیط استفاده می‌شود.")
+                                await set_setting(session, "BOT_TOKEN", env_token)
+                                return env_token
+                        logger.warning(
+                            "BOT_USERNAME تنظیم نشده، بنابراین برای جلوگیری از تغییر ناخواسته، BOT_TOKEN دیتابیس استفاده می‌شود. "
+                            "برای مهاجرت امن به ربات جدید، BOT_USERNAME و BOT_TOKEN جدید را در .env/پنل ذخیره کنید."
+                        )
                 logger.info("BOT_TOKEN از admin_settings خوانده شد.")
                 return db_token
     except Exception as exc:
         logger.warning(f"خواندن BOT_TOKEN از دیتابیس ناموفق بود: {exc}")
 
-    env_token = settings.bot_token.strip()
     if env_token:
         logger.info("BOT_TOKEN از .env استفاده شد.")
     return env_token
+
+
+async def _prepare_bot_for_polling(bot: Bot) -> None:
+    """Verify the bot identity and remove any stale webhook before polling."""
+    me = await bot.get_me()
+    logger.success(f"Telegram bot آماده است: @{me.username or '-'} (id={me.id})")
+    expected_username = await _configured_bot_username()
+    if expected_username and (me.username or "").lower() != expected_username.lower():
+        logger.warning(
+            f"BOT_USERNAME روی @{expected_username} تنظیم شده اما توکن فعلی متعلق به @{me.username or '-'} است. "
+            "اگر دیتابیس را به ربات جدید منتقل کرده‌اید، BOT_TOKEN ذخیره‌شده در admin_settings را بررسی کنید."
+        )
+    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Webhook تلگرام پاک شد و polling می‌تواند پیام‌های جدید را دریافت کند.")
 
 
 def setup_logging() -> None:
@@ -770,6 +846,7 @@ async def main() -> None:
             logger.info("شروع دریافت پیام‌ها (polling)...")
             restart_event = asyncio.Event()
             watcher_task = asyncio.create_task(_watch_restart_marker(RESTART_MARKER, restart_event))
+            await _prepare_bot_for_polling(bot)
             polling_task = asyncio.create_task(
                 dp.start_polling(
                     bot,

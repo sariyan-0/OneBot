@@ -41,7 +41,7 @@ export default async function PlansPage() {
               <input id="create-days" name="duration_days" type="number" min="1" defaultValue="30" />
             </div>
             <div className="field-full">
-              <InboundPicker name="inbound_ids" label="Select inbounds" />
+              <InboundPicker name="inbound_ids" label="All active inbounds" />
             </div>
             <div className="field-full">
               <button type="submit">Create plan</button>
@@ -59,7 +59,7 @@ export default async function PlansPage() {
                     <p className="item-sub">
                       ${money(plan.price_usdt)}{plan.price_toman ? ` · ${Number(plan.price_toman).toLocaleString()} toman` : ""} · {plan.traffic_gb ? `${plan.traffic_gb} GB` : "Unlimited"} · {plan.duration_days} days
                     </p>
-                    <p className="item-sub">Inbounds: {plan.inbound_ids || "Not assigned"}</p>
+                    <p className="item-sub">Inbounds: {plan.inbound_ids || "All active inbounds"}</p>
                   </div>
                   <div className={`pill ${plan.is_active ? "ok" : "bad"}`}>{plan.is_active ? "active" : "inactive"}</div>
                 </div>
@@ -89,7 +89,7 @@ export default async function PlansPage() {
                     <InboundPicker
                       name="inbound_ids"
                       initialValue={plan.inbound_ids || ""}
-                      label="Select inbounds"
+                      label="All active inbounds"
                     />
                   </div>
                   <div>

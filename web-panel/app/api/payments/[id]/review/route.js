@@ -107,9 +107,6 @@ async function createSubscriptionFromPlan(user, plan, payment) {
     .split(",")
     .map((value) => Number(value.trim()))
     .filter(Boolean);
-  if (!inboundIds.length) {
-    throw new Error("This plan has no inbounds assigned.");
-  }
 
   const requestedEmail = `client-${user.telegram_id}-${Date.now()}`;
   const requestedSubId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`.slice(0, 16);
@@ -191,10 +188,7 @@ async function applyPlanToExistingSubscription(user, plan, payment, parsedOrder)
       .split(",")
       .map((value) => Number(value.trim()))
       .filter(Boolean);
-    if (!inboundIds.length) {
-      throw new Error("This plan has no inbounds assigned.");
-    }
-    await createClient({
+    const created = await createClient({
       inboundIds,
       email: sub.email,
       trafficGb: Number(plan.traffic_gb || 0),
@@ -203,6 +197,7 @@ async function applyPlanToExistingSubscription(user, plan, payment, parsedOrder)
       limitIp: Number(plan.limit_ip || 0),
       tgId: Number(user.telegram_id || 0),
     });
+    sub.inbound_id = Number(created?.inboundIds?.[0] || created?.inbound_id || sub.inbound_id || 0);
   } else {
     await updateClient(sub.email, {
       trafficGb: Number(plan.traffic_gb || 0),
@@ -225,7 +220,7 @@ async function applyPlanToExistingSubscription(user, plan, payment, parsedOrder)
      WHERE id = ?`,
     [
       plan.id,
-      Number(String(plan.inbound_ids || "").split(",").map((v) => Number(v.trim())).filter(Boolean)[0] || sub.inbound_id || 0),
+      Number(sub.inbound_id || String(plan.inbound_ids || "").split(",").map((v) => Number(v.trim())).filter(Boolean)[0] || 0),
       Number(plan.traffic_gb || 0),
       nextExpiry.toISOString(),
       Number(plan.limit_ip || 0),

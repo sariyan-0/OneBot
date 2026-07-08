@@ -58,7 +58,7 @@ export async function POST(request) {
   }
 
   const selectedInbounds = inboundIds.length ? inboundIds : [Number(body.inboundId || 0)].filter(Boolean);
-  if (!selectedInbounds.length) {
+  if (!selectedInbounds.length && mode !== "plan") {
     return NextResponse.json({ ok: false, error: "No inbound selected." }, { status: 400 });
   }
 
@@ -77,6 +77,7 @@ export async function POST(request) {
   });
 
   const clientUuid = String(created?.uuid || created?.id || created?.sub_id || subId);
+  const dbInboundId = Number(created?.inboundIds?.[0] || created?.inbound_id || selectedInbounds[0] || 0);
   const panelCfg = await getPanelConnectionConfig();
   const subLink = buildSubLink(panelCfg.panelUrl || "", subId, Number(panelCfg.subPort || 0));
   const configLinks = await getClientLinks(email).catch(() => []);
@@ -93,7 +94,7 @@ export async function POST(request) {
       clientUuid,
       subId,
       plan?.id ?? null,
-      selectedInbounds[0],
+      dbInboundId,
       trafficGb,
       expiryDate,
       limitIp,

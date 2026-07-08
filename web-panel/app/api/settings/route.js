@@ -7,6 +7,7 @@ import { getRootDir } from "../../../lib/root";
 
 const KEYS = [
   "BOT_TOKEN",
+  "BOT_USERNAME",
   "PANEL_URL",
   "PANEL_API_TOKEN",
   "PANEL_USERNAME",

@@ -134,9 +134,6 @@ export async function POST(request, { params }) {
       .split(",")
       .map((value) => Number(value.trim()))
       .filter(Boolean);
-    if (!inboundIds.length) {
-      return NextResponse.json({ ok: false, error: "This plan has no inbounds assigned" }, { status: 400 });
-    }
 
     const email = String(body.email || `manual-${user.telegram_id}-${Date.now()}`).trim();
     const created = await createClient({

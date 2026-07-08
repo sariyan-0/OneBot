@@ -365,6 +365,7 @@ async function getTicketById(ticketId) {
 async function getBackupsSettings() {
   const keys = [
     "BOT_TOKEN",
+    "BOT_USERNAME",
     "PANEL_URL",
     "PANEL_API_TOKEN",
     "PANEL_USERNAME",

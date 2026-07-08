@@ -247,6 +247,22 @@ def _xui_client() -> XUIClient:
     )
 
 
+def _normalize_plan_inbound_ids(value: str) -> str:
+    """Store plan inbound IDs consistently; empty/0/all means all active inbounds."""
+    raw = str(value or "").strip()
+    if not raw or raw in {"0", "*"} or raw.lower() in {"all", "any"} or raw in {"همه", "همه اینباندها"}:
+        return ""
+
+    ids: list[int] = []
+    for part in raw.replace("\n", ",").split(","):
+        item = part.strip()
+        if item.isdigit():
+            inbound_id = int(item)
+            if inbound_id > 0 and inbound_id not in ids:
+                ids.append(inbound_id)
+    return ",".join(str(i) for i in ids)
+
+
 # ──────────────────────────────────────────────
 # ورود به حالت ادمین — دستور دینامیک
 # ──────────────────────────────────────────────
@@ -468,7 +484,7 @@ async def cb_adm_plan_view(callback: CallbackQuery) -> None:
         return
     traffic = f"{plan.traffic_gb} GB" if plan.traffic_gb else "♾ نامحدود"
     ip_info = f"{plan.limit_ip} دستگاه" if plan.limit_ip else "نامحدود"
-    inbounds_str = plan.inbound_ids or "تنظیم نشده"
+    inbounds_str = plan.inbound_ids or "همه اینباندهای فعال"
     toman = getattr(plan, "price_toman", 0) or 0
     price_line = f"💲 قیمت: `${_fmt_usdt(plan.price_usdt)}`"
     if toman > 0:
@@ -535,11 +551,7 @@ async def cb_adm_plan_edit(callback: CallbackQuery, state: FSMContext) -> None:
         "inbounds": (
             "شناسه اینباندهای اختصاصی این پلن را با ویرگول وارد کنید.\n"
             "مثال: <code>1,3,5</code>\n\n"
-            "⚠️ توجه: این فیلد <b>فقط برای پیش‌فرض</b> است.\n"
-            "در حال حاضر کانفیگ‌ها از بخش «🔌 اینباندها» در منوی پنل ادمین\n"
-            "به صورت round-robin انتخاب می‌شوند — نه از اینجا.\n"
-            "اگه می‌خوای کانفیگ‌ها فقط از اینباندهای خاصی ساخته بشن،\n"
-            "از <b>پنل مدیریت ← 🔌 اینباندها</b> اقدام کن."
+            "اگر خالی بگذارید یا <code>0</code> وارد کنید، همه اینباندهای فعال پنل برای این پلن مجاز می‌شوند."
         ),
         "ip": "حداکثر دستگاهی که می‌تونه همزمان متصل بشه.\nمثال: <code>2</code> (دو دستگاه) | <code>0</code> (نامحدود)",
     }
@@ -578,11 +590,14 @@ async def msg_plan_edit_value(message: Message, state: FSMContext) -> None:
         return
 
     db_field, cast = field_map[field]
-    try:
-        casted = cast(val)
-    except ValueError:
-        await message.answer(f"❌ مقدار وارد‌شده معتبر نیست. نوع مورد انتظار: {cast.__name__}")
-        return
+    if db_field == "inbound_ids":
+        casted = _normalize_plan_inbound_ids(val)
+    else:
+        try:
+            casted = cast(val)
+        except ValueError:
+            await message.answer(f"❌ مقدار وارد‌شده معتبر نیست. نوع مورد انتظار: {cast.__name__}")
+            return
 
     async with AsyncSessionLocal() as session:
         await update_plan(session, plan_id, **{db_field: casted})
@@ -626,7 +641,7 @@ async def cb_adm_plan_inbounds(callback: CallbackQuery) -> None:
         "✅ = انتخاب‌شده برای این پلن\n"
         "🟢 = فعال در پنل ولی انتخاب نشده\n"
         "❌ = غیرفعال در پنل\n\n"
-        "⚠️ اگر هیچ اینباندی انتخاب نشود، از اینباندهای فعال عمومی استفاده می‌شود."
+        "⚠️ اگر هیچ اینباندی انتخاب نشود، همه اینباندهای فعال پنل برای این پلن مجاز هستند."
     )
     try:
         await callback.message.edit_text(
@@ -688,7 +703,7 @@ async def cb_adm_plan_inb_toggle(callback: CallbackQuery) -> None:
         "✅ = انتخاب‌شده برای این پلن\n"
         "🟢 = فعال در پنل ولی انتخاب نشده\n"
         "❌ = غیرفعال در پنل\n\n"
-        "⚠️ اگر هیچ اینباندی انتخاب نشود، از اینباندهای فعال عمومی استفاده می‌شود."
+        "⚠️ اگر هیچ اینباندی انتخاب نشود، همه اینباندهای فعال پنل برای این پلن مجاز هستند."
     )
     try:
         await callback.message.edit_text(
@@ -771,14 +786,15 @@ async def plan_add_limit_ip(message: Message, state: FSMContext) -> None:
         await message.answer("❌ عدد وارد کنید.")
         return
     await state.set_state(PlanAddStates.inbounds)
-    await message.answer("🔌 شناسه اینباندها با ویرگول (مثلاً 1,2,3)\nاگر نمی‌دانید عدد 0 بزنید:")
+    await message.answer(
+        "🔌 شناسه اینباندهای اختصاصی را با ویرگول وارد کنید (مثلاً 1,2,3)\n"
+        "برای اجازه دادن به همه اینباندهای فعال، خالی بگذارید یا عدد 0 بزنید:"
+    )
 
 
 @router.message(PlanAddStates.inbounds)
 async def plan_add_inbounds(message: Message, state: FSMContext) -> None:
-    val = message.text.strip()
-    if val == "0":
-        val = ""
+    val = _normalize_plan_inbound_ids(message.text or "")
     data = await state.get_data()
     async with AsyncSessionLocal() as session:
         plan = await create_plan(
@@ -2231,7 +2247,7 @@ _FIELD_LABELS = {
     "traffic":  ("حجم GB — صفر = نامحدود",    int),
     "days":     ("مدت (روز)",                 int),
     "ip":       ("حداکثر دستگاه (صفر=نامحدود)", int),
-    "inbounds": ("آیدی اینباندها با ویرگول",   str),
+    "inbounds": ("آیدی اینباندها با ویرگول (خالی/0 = همه فعال‌ها)", str),
 }
 
 _FIELD_DB = {
@@ -2252,8 +2268,11 @@ async def cb_adm_quick_edit(callback: CallbackQuery, state: FSMContext) -> None:
     label, _ = _FIELD_LABELS.get(field, (field, str))
     await state.set_state(PlanQuickEditStates.waiting_value)
     await state.update_data(field=field, plan_id=plan_id)
+    hint = ""
+    if field == "inbounds":
+        hint = "\nمثال: <code>1,3,5</code>\nبرای اجازه دادن به همه اینباندهای فعال، <code>0</code> یا متن خالی وارد کنید."
     await callback.message.answer(
-        f"✏️ مقدار جدید برای <b>{label}</b> را وارد کنید:\n"
+        f"✏️ مقدار جدید برای <b>{label}</b> را وارد کنید:{hint}\n"
         "برای لغو: /cancel",
         parse_mode="HTML",
     )
@@ -2277,11 +2296,14 @@ async def msg_quick_edit_value(message: Message, state: FSMContext) -> None:
 
     _, cast = _FIELD_LABELS.get(field, (field, str))
     db_field = _FIELD_DB.get(field, field)
-    try:
-        casted = cast(val)
-    except ValueError:
-        await message.answer(f"❌ مقدار نامعتبر — نوع مورد انتظار: <b>{cast.__name__}</b>", parse_mode="HTML")
-        return
+    if db_field == "inbound_ids":
+        casted = _normalize_plan_inbound_ids(val)
+    else:
+        try:
+            casted = cast(val)
+        except ValueError:
+            await message.answer(f"❌ مقدار نامعتبر — نوع مورد انتظار: <b>{cast.__name__}</b>", parse_mode="HTML")
+            return
 
     async with AsyncSessionLocal() as session:
         await update_plan(session, plan_id, **{db_field: casted})

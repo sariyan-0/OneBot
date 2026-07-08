@@ -128,8 +128,6 @@ async def _resolve_usable_inbound_ids(
     requested ids directly so purchase flows can still proceed.
     """
     requested = [int(i) for i in requested_inbound_ids if int(i) > 0]
-    if not requested:
-        requested = [1]
 
     try:
         all_inbounds = await xui.get_inbounds()
@@ -137,12 +135,18 @@ async def _resolve_usable_inbound_ids(
         logger.warning(
             f"دریافت لیست اینباندهای پنل ناموفق بود؛ از اینباندهای تنظیم‌شده استفاده می‌کنیم: {exc}"
         )
-        return requested
+        return requested or [1]
 
     enabled_inbound_ids = [ib.id for ib in all_inbounds if ib.enable]
     if not enabled_inbound_ids:
         logger.warning("هیچ اینباند فعالی از API پنل برنگشت؛ از اینباندهای تنظیم‌شده استفاده می‌کنیم.")
-        return requested
+        return requested or [1]
+
+    if not requested:
+        logger.info(
+            f"هیچ اینباند اختصاصی برای پلن انتخاب نشده؛ همه اینباندهای فعال مجازند: {enabled_inbound_ids}"
+        )
+        return enabled_inbound_ids
 
     valid_target_ids = [iid for iid in requested if iid in enabled_inbound_ids]
     if valid_target_ids:
@@ -172,7 +176,7 @@ async def _create_subscription_on_panel(
     """
     from database.crud import get_enabled_inbound_ids
 
-    if plan and plan.get_inbound_ids():
+    if plan:
         target_inbound_ids = plan.get_inbound_ids()
     else:
         enabled_ids = await get_enabled_inbound_ids(session)
@@ -478,11 +482,7 @@ async def apply_paid_plan_to_subscription(
                 await xui.delete_client(sub.email)
             except Exception as exc:
                 logger.warning(f"حذف کلاینت قبلی هنگام تغییر پلن ناموفق بود: {exc}")
-            from database.crud import get_enabled_inbound_ids
-            if plan.get_inbound_ids():
-                target_inbound_ids = plan.get_inbound_ids()
-            else:
-                target_inbound_ids = await get_enabled_inbound_ids(session) or [1]
+            target_inbound_ids = plan.get_inbound_ids()
             target_inbound_ids = await _resolve_usable_inbound_ids(xui, target_inbound_ids)
             first_inbound_id = target_inbound_ids[0]
             await xui.add_client(

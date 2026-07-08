@@ -64,6 +64,9 @@ export default function ManualSubPage() {
         return inbounds.filter((inb) => ids.includes(Number(inb.id)));
       }
     }
+    if (mode === "plan") {
+      return inbounds.filter((inb) => inb.enable !== false && inb.enable !== 0);
+    }
     return inbounds;
   }, [mode, selectedPlanData, inbounds]);
 
@@ -223,7 +226,7 @@ export default function ManualSubPage() {
           <div className="field-full">
             <button type="button" onClick={() => setShowInbounds((v) => !v)} className="btn secondary" style={{ width: "100%" }}>
               {showInbounds ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-              Allowed inbounds ({mode === "plan" ? "from plan" : selectedInbounds.length})
+              Allowed inbounds ({mode === "plan" ? (selectedPlanData?.inbound_ids ? "from plan" : "all active") : selectedInbounds.length})
             </button>
             {showInbounds && (
               <div className="card-list" style={{ marginTop: 12 }}>

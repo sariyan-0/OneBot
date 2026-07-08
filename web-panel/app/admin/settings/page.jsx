@@ -50,12 +50,20 @@ export default async function SettingsPage() {
                 placeholder="123456:ABC-DEF..."
               />
             </div>
+            <div className="field-full">
+              <label>Bot username</label>
+              <input
+                name="BOT_USERNAME"
+                defaultValue={settings.BOT_USERNAME || ""}
+                placeholder="your_bot_username"
+              />
+            </div>
           </div>
           <div className="notice" style={{ display: "grid", gap: 6 }}>
             <strong>Restart behavior</strong>
-            <div className="muted">Saving this field updates the database and writes a restart marker so the bot reloads with the new token.</div>
+            <div className="muted">Saving these fields updates the database and writes a restart marker so the bot reloads with the intended Telegram identity.</div>
           </div>
-          <button type="submit">Save bot token</button>
+          <button type="submit">Save bot identity</button>
         </form>
       </Section>
 

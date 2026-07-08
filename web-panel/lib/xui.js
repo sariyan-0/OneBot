@@ -105,6 +105,38 @@ async function getInbounds() {
   return requestXui("/inbounds/list");
 }
 
+function normalizeInboundIds(inboundIds) {
+  const values = Array.isArray(inboundIds) ? inboundIds : [inboundIds];
+  const seen = new Set();
+  const ids = [];
+  for (const value of values) {
+    const id = Number(value);
+    if (Number.isFinite(id) && id > 0 && !seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+async function resolveCreateInboundIds(inboundIds) {
+  const requested = normalizeInboundIds(inboundIds);
+  if (requested.length) return requested;
+
+  const inbounds = await getInbounds();
+  const enabled = Array.isArray(inbounds)
+    ? inbounds
+        .filter((inbound) => inbound && inbound.enable !== false && inbound.enable !== 0)
+        .map((inbound) => Number(inbound.id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    : [];
+  const unique = normalizeInboundIds(enabled);
+  if (!unique.length) {
+    throw new Error("No active inbounds are available for this plan.");
+  }
+  return unique;
+}
+
 async function getClient(email) {
   return requestXui(`/clients/get/${encodeURIComponent(email)}`);
 }
@@ -151,6 +183,7 @@ async function createClient({
   const expiryTime = expiryTimeMs != null
     ? Number(expiryTimeMs)
     : (expireDays > 0 ? Math.floor((Date.now() + Number(expireDays) * 86400000)) : 0);
+  const targetInboundIds = await resolveCreateInboundIds(inboundIds);
 
   const payload = {
     client: {
@@ -163,7 +196,7 @@ async function createClient({
       subId: sub,
       reset: 0,
     },
-    inboundIds: Array.isArray(inboundIds) ? inboundIds.map((value) => Number(value)).filter(Boolean) : [Number(inboundIds)],
+    inboundIds: targetInboundIds,
   };
 
   try {
@@ -174,7 +207,12 @@ async function createClient({
     }
     await requestXui("/clients/bulkCreate", { method: "POST", body: [payload] });
   }
-  return getClient(email);
+  const created = await getClient(email);
+  const createdInboundIds = normalizeInboundIds(created?.inboundIds || created?.inbound_ids || []);
+  return {
+    ...created,
+    inboundIds: createdInboundIds.length ? createdInboundIds : targetInboundIds,
+  };
 }
 
 async function updateClient(email, {
@@ -263,6 +301,7 @@ module.exports = {
   buildSubLink,
   downloadPanelDb,
   getInbounds,
+  normalizeInboundIds,
   getClient,
   getClients,
   getClientLinks,
