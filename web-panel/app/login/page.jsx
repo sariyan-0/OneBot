@@ -2,9 +2,9 @@ export const dynamic = "force-dynamic";
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import Image from "next/image";
 
 import { isAdminAuth } from "../../lib/auth";
+import { safeImageSrc } from "../../lib/asset-url";
 import { getSetting } from "../../lib/db";
 import { ShieldCheck, LockKeyhole } from "lucide-react";
 
@@ -19,13 +19,14 @@ export default async function LoginPage({ searchParams }) {
     getSetting("panel_name", "ONEBOT"),
     getSetting("brand_logo_url", ""),
   ]);
+  const safeLogoUrl = safeImageSrc(logoUrl);
 
   return (
     <main className="main" style={{ minHeight: "100dvh", display: "grid", placeItems: "center" }}>
       <div className="panel" style={{ width: "min(520px, 100%)", padding: 24 }}>
         <div className="brand" style={{ borderBottom: "1px solid rgba(255,255,255,.08)", marginBottom: 18 }}>
           <div className="brand-mark">
-            {logoUrl ? <Image src={logoUrl} alt={panelName} width={28} height={28} style={{ objectFit: "cover", borderRadius: 10 }} unoptimized /> : "O"}
+            {safeLogoUrl ? <img src={safeLogoUrl} alt={panelName} width={28} height={28} style={{ objectFit: "cover", borderRadius: 10 }} /> : "O"}
           </div>
           <div>
             <strong>{panelName || "ONEBOT"}</strong>

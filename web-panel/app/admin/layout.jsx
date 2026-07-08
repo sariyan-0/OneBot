@@ -2,10 +2,10 @@ export const dynamic = "force-dynamic";
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import Image from "next/image";
 import { LogOut } from "lucide-react";
 
 import { isAdminAuth } from "../../lib/auth";
+import { safeImageSrc } from "../../lib/asset-url";
 import { getSetting } from "../../lib/db";
 import SidebarNav from "../../components/sidebar-nav";
 import TopBar from "../../components/topbar";
@@ -45,14 +45,15 @@ export default async function AdminLayout({ children }) {
     getSetting("panel_name", "ONEBOT"),
     getSetting("brand_logo_url", ""),
   ]);
+  const safeLogoUrl = safeImageSrc(logoUrl);
 
   return (
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
-            {logoUrl ? (
-              <Image src={logoUrl} alt="ONEBOT" width={28} height={28} style={{ objectFit: "cover", borderRadius: 10 }} unoptimized />
+            {safeLogoUrl ? (
+              <img src={safeLogoUrl} alt="ONEBOT" width={28} height={28} style={{ objectFit: "cover", borderRadius: 10 }} />
             ) : (
               "O"
             )}
