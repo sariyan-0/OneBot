@@ -22,9 +22,10 @@ async function getAdminSenderId() {
 
   const supportUsername = String((await getSetting("WEB_ADMIN_USERNAME", "")) || "support").trim() || "support";
   await exec(
-    "INSERT INTO users(telegram_id, username, first_name, is_admin, created_at, updated_at) VALUES(0, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    "INSERT OR IGNORE INTO users(telegram_id, username, first_name, is_admin, created_at, updated_at) VALUES(0, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
     [supportUsername, "Support"]
   );
+  await exec("UPDATE users SET is_admin = 1, updated_at = CURRENT_TIMESTAMP WHERE telegram_id = 0");
   const createdAdmin = await one("SELECT id FROM users WHERE telegram_id = 0 ORDER BY id DESC LIMIT 1");
   return createdAdmin?.id || null;
 }
@@ -143,87 +144,95 @@ export async function GET(request, { params }) {
 }
 
 export async function POST(request, { params }) {
-  const ticketId = Number(params.id);
-  if (!Number.isFinite(ticketId)) {
-    return NextResponse.json({ ok: false, error: "Invalid ticket id" }, { status: 400 });
-  }
-
-  const form = await request.formData();
-  const action = String(form.get("action") || "");
-  const body = String(form.get("body") || "").trim();
-
-  const ticket = await one("SELECT * FROM tickets WHERE id = ?", [ticketId]);
-  if (!ticket) {
-    return NextResponse.json({ ok: false, error: "Ticket not found" }, { status: 404 });
-  }
-  const jsonMode = wantsJson(request);
-
-  if (action === "reply") {
-    if (!body) {
-      return jsonMode
-        ? NextResponse.json({ ok: false, error: "empty_reply" }, { status: 400 })
-        : redirectSeeOther(request, `/admin/tickets/${ticketId}?error=empty_reply`);
-    }
-    const senderId = await getAdminSenderId();
-    if (!senderId) {
-      return NextResponse.json({ ok: false, error: "No admin user exists in the database" }, { status: 409 });
+  try {
+    const ticketId = Number(params.id);
+    if (!Number.isFinite(ticketId)) {
+      return NextResponse.json({ ok: false, error: "Invalid ticket id" }, { status: 400 });
     }
 
-    await exec(
-      "INSERT INTO ticket_messages(ticket_id, sender_id, body, is_admin_reply, created_at) VALUES(?, ?, ?, 1, CURRENT_TIMESTAMP)",
-      [ticketId, senderId, body]
-    );
-    await exec(
-      "UPDATE tickets SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [ticketId]
-    );
+    const form = await request.formData();
+    const action = String(form.get("action") || "");
+    const body = String(form.get("body") || "").trim();
 
-    const bundle = await getTicketBundle(ticketId);
-    if (bundle.ticket?.telegram_id) {
-      try {
-        await sendTelegramTicketReply(bundle.ticket.telegram_id, ticketId, bundle.ticket.subject, body);
-      } catch {
-        // Keep admin flow alive even when Telegram is unreachable.
+    const ticket = await one("SELECT * FROM tickets WHERE id = ?", [ticketId]);
+    if (!ticket) {
+      return NextResponse.json({ ok: false, error: "Ticket not found" }, { status: 404 });
+    }
+    const jsonMode = wantsJson(request);
+
+    if (action === "reply") {
+      if (!body) {
+        return jsonMode
+          ? NextResponse.json({ ok: false, error: "empty_reply" }, { status: 400 })
+          : redirectSeeOther(request, `/admin/tickets/${ticketId}?error=empty_reply`);
       }
+      const senderId = await getAdminSenderId();
+      if (!senderId) {
+        return NextResponse.json({ ok: false, error: "No admin user exists in the database" }, { status: 409 });
+      }
+
+      await exec(
+        "INSERT INTO ticket_messages(ticket_id, sender_id, body, is_admin_reply, created_at) VALUES(?, ?, ?, 1, CURRENT_TIMESTAMP)",
+        [ticketId, senderId, body]
+      );
+      await exec(
+        "UPDATE tickets SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [ticketId]
+      );
+
+      const bundle = await getTicketBundle(ticketId);
+      if (bundle.ticket?.telegram_id) {
+        try {
+          await sendTelegramTicketReply(bundle.ticket.telegram_id, ticketId, bundle.ticket.subject, body);
+        } catch {
+          // Keep admin flow alive even when Telegram is unreachable.
+        }
+      }
+      const createdMessage = await one(
+        `SELECT tm.*, u.telegram_id, u.username, u.first_name
+         FROM ticket_messages tm
+         LEFT JOIN users u ON u.id = tm.sender_id
+         WHERE tm.ticket_id = ?
+         ORDER BY tm.id DESC
+         LIMIT 1`,
+        [ticketId]
+      );
+      return jsonMode
+        ? NextResponse.json({
+            ok: true,
+            ticketId,
+            status: "in_progress",
+            message: createdMessage || null,
+          })
+        : redirectToTicket(request, ticketId, "replied");
     }
-    const createdMessage = await one(
-      `SELECT tm.*, u.telegram_id, u.username, u.first_name
-       FROM ticket_messages tm
-       LEFT JOIN users u ON u.id = tm.sender_id
-       WHERE tm.ticket_id = ?
-       ORDER BY tm.id DESC
-       LIMIT 1`,
-      [ticketId]
-    );
-    return jsonMode
-      ? NextResponse.json({
-          ok: true,
-          ticketId,
-          status: "in_progress",
-          message: createdMessage || null,
-        })
-      : redirectToTicket(request, ticketId, "replied");
-  }
 
-  if (action === "reopen") {
-    await exec(
-      "UPDATE tickets SET status = 'open', closed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [ticketId]
-    );
-    return jsonMode
-      ? NextResponse.json({ ok: true, ticketId, status: "open" })
-      : redirectToTicket(request, ticketId, "reopened");
-  }
+    if (action === "reopen") {
+      await exec(
+        "UPDATE tickets SET status = 'open', closed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [ticketId]
+      );
+      return jsonMode
+        ? NextResponse.json({ ok: true, ticketId, status: "open" })
+        : redirectToTicket(request, ticketId, "reopened");
+    }
 
-  if (action === "close") {
-    await exec(
-      "UPDATE tickets SET status = 'closed', closed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [ticketId]
-    );
-    return jsonMode
-      ? NextResponse.json({ ok: true, ticketId, status: "closed" })
-      : redirectToTicket(request, ticketId, "closed");
-  }
+    if (action === "close") {
+      await exec(
+        "UPDATE tickets SET status = 'closed', closed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [ticketId]
+      );
+      return jsonMode
+        ? NextResponse.json({ ok: true, ticketId, status: "closed" })
+        : redirectToTicket(request, ticketId, "closed");
+    }
 
-  return NextResponse.json({ ok: false, error: "Unsupported action" }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "Unsupported action" }, { status: 400 });
+  } catch (error) {
+    console.error("Ticket route error:", error);
+    const jsonMode = wantsJson(request);
+    return jsonMode
+      ? NextResponse.json({ ok: false, error: "ticket_route_failed" }, { status: 500 })
+      : redirectSeeOther(request, `/admin/tickets/${params.id}?error=ticket_route_failed`);
+  }
 }

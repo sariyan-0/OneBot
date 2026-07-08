@@ -333,6 +333,35 @@ def _clear_panel_pid() -> None:
         WEB_PANEL_PID_FILE.unlink()
 
 
+def _ensure_nginx_upload_limit() -> None:
+    if os.name == "nt" or shutil.which("nginx") is None:
+        return
+
+    conf_path = Path("/etc/nginx/conf.d/onebot-upload-size.conf")
+    desired = "# ONEBOT VPN Bot — shared upload size limit\nclient_max_body_size 1g;\n"
+
+    try:
+        current = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+        if current != desired:
+            conf_path.write_text(desired, encoding="utf-8")
+    except OSError as exc:
+        logger.warning(f"Could not write nginx upload limit config: {exc}")
+        return
+
+    try:
+        test = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
+        if test.returncode != 0:
+            logger.warning("nginx config test failed after writing upload limit.")
+            return
+
+        reload_proc = subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, text=True)
+        if reload_proc.returncode != 0:
+            subprocess.run(["nginx", "-s", "reload"], capture_output=True, text=True)
+        logger.info("nginx upload limit configured.")
+    except Exception as exc:
+        logger.warning(f"Could not refresh nginx upload limit: {exc}")
+
+
 async def _watch_restart_marker(marker: Path, restart_event: asyncio.Event) -> None:
     while not restart_event.is_set():
         if marker.exists():
@@ -374,6 +403,8 @@ async def _start_node_web_panel() -> asyncio.subprocess.Process | None:
     if not _free_web_panel_port(panel_dir, panel_port):
         logger.warning("Web panel port 3000 is unavailable and could not be recovered.")
         return None
+
+    _ensure_nginx_upload_limit()
 
     dev_mode_flag = os.environ.get("ONEBOT_WEB_PANEL_DEV", "").strip().lower()
     use_dev_mode = os.name == "nt" and dev_mode_flag != "0"
