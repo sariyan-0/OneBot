@@ -41,6 +41,12 @@ function sqlitePath() {
   if (raw === ":memory:") {
     return raw;
   }
+
+  const normalizedRaw = raw.replace(/\\/g, "/");
+  if (normalizedRaw === "/data/bot_data.db") {
+    return path.join(sharedDataDir(), "bot_data.db");
+  }
+
   if (path.isAbsolute(raw)) {
     return path.normalize(raw);
   }
