@@ -448,8 +448,9 @@ _write_nginx_proxy() {
   local conf_file="/etc/nginx/conf.d/onebot-webhook.conf"
   local body_size_conf="/etc/nginx/conf.d/onebot-upload-size.conf"
   cat > "$body_size_conf" <<'NGINXCONF'
-# ONEBOT VPN Bot — shared upload size limit
-client_max_body_size 1g;
+# ONEBOT VPN Bot - shared upload size limit
+# 0 disables nginx request body size checks for panel uploads.
+client_max_body_size 0;
 NGINXCONF
   cat > "$conf_file" <<NGINXCONF
 # ONEBOT VPN Bot — Webhook HTTPS proxy
@@ -458,7 +459,7 @@ NGINXCONF
 server {
     listen 80 default_server;
     server_name ${domain} _;
-    client_max_body_size 1g;
+    client_max_body_size 0;
     location /.well-known/acme-challenge/ { root /var/www/html; }
     location / { return 301 https://\$host\$request_uri; }
 }
@@ -466,7 +467,7 @@ server {
 server {
     listen 443 ssl http2 default_server;
     server_name ${domain} _;
-    client_max_body_size 1g;
+    client_max_body_size 0;
 
     ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;

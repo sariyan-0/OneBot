@@ -338,7 +338,7 @@ def _ensure_nginx_upload_limit() -> None:
         return
 
     conf_path = Path("/etc/nginx/conf.d/onebot-upload-size.conf")
-    desired = "# ONEBOT VPN Bot — shared upload size limit\nclient_max_body_size 1g;\n"
+    desired = "# ONEBOT VPN Bot - shared upload size limit\n# 0 disables nginx request body size checks for panel uploads.\nclient_max_body_size 0;\n"
 
     try:
         current = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""

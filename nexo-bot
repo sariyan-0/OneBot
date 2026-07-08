@@ -225,8 +225,9 @@ _ensure_nginx_upload_limit() {
 
   local body_size_conf="/etc/nginx/conf.d/onebot-upload-size.conf"
   cat > "$body_size_conf" <<'NGINXCONF'
-# ONEBOT VPN Bot — shared upload size limit
-client_max_body_size 1g;
+# ONEBOT VPN Bot - shared upload size limit
+# 0 disables nginx request body size checks for panel uploads.
+client_max_body_size 0;
 NGINXCONF
 
   if nginx -t 2>/dev/null; then
@@ -801,7 +802,7 @@ _ssl_setup_nginx_proxy() {
 server {
     listen 80;
     server_name ${domain};
-    client_max_body_size 1g;
+    client_max_body_size 0;
     # Let's Encrypt auto-renewal
     location /.well-known/acme-challenge/ { root /var/www/html; }
     location / { return 301 https://\$host\$request_uri; }
@@ -810,7 +811,7 @@ server {
 server {
     listen 443 ssl;
     server_name ${domain};
-    client_max_body_size 1g;
+    client_max_body_size 0;
 
     ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
