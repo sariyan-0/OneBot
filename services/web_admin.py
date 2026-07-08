@@ -2680,6 +2680,40 @@ def _validate_sqlite_bytes(raw: bytes) -> None:
         raise ValueError("Uploaded file is not a SQLite database")
 
 
+async def _current_bot_identity_settings() -> dict[str, str]:
+    values: dict[str, str] = {}
+    async with AsyncSessionLocal() as session:
+        for key, fallback in (
+            ("BOT_TOKEN", settings.bot_token),
+            ("BOT_USERNAME", settings.bot_username),
+        ):
+            value = (await get_setting(session, key, fallback or "")).strip()
+            if value:
+                values[key] = value
+    return values
+
+
+def _write_sqlite_settings(db_path: Path, values: dict[str, str]) -> None:
+    if not values:
+        return
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS admin_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+        )
+        for key, value in values.items():
+            conn.execute(
+                "INSERT INTO admin_settings(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 async def restore_bot_backup(request: web.Request) -> web.Response:
     _require_auth(request)
     if "sqlite" not in settings.db_url:
@@ -2702,6 +2736,7 @@ async def restore_bot_backup(request: web.Request) -> web.Response:
     if not uploaded:
         _redirect("/admin/backups", err="No backup file uploaded")
 
+    preserved_identity = await _current_bot_identity_settings()
     filename, raw = uploaded
     try:
         db_bytes = _extract_uploaded_sqlite(raw, filename)
@@ -2729,7 +2764,9 @@ async def restore_bot_backup(request: web.Request) -> web.Response:
         conn.close()
 
     os.replace(tmp_path, db_path)
-    _redirect("/admin/backups", msg="Bot database restored. Restart the bot now.")
+    _write_sqlite_settings(db_path, preserved_identity)
+    (Path(__file__).resolve().parent.parent / ".onebot-restart").write_text(str(datetime.now().timestamp()), encoding="utf-8")
+    _redirect("/admin/backups", msg="Bot database restored. Bot restart requested.")
 
 
 def setup_web_admin(app: web.Application) -> None:

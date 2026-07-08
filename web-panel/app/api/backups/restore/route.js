@@ -4,17 +4,25 @@ import path from "path";
 import AdmZip from "adm-zip";
 import { getRootDir } from "../../../../lib/root";
 import { redirectSeeOther } from "../../../../lib/redirect";
-import { setSetting, sqlitePath } from "../../../../lib/db";
+import { closeSqlite, getSetting, setSetting, sqlitePath } from "../../../../lib/db";
 
 export const runtime = "nodejs";
 
 const RESTORE_PATHS = new Map([
-  [".env", ".env"],
   ["bot_data.db", "bot_data.db"],
   ["bot_data.db-wal", "bot_data.db-wal"],
   ["bot_data.db-shm", "bot_data.db-shm"],
-  ["web-panel/.env.local", "web-panel/.env.local"],
   ["nginx/onebot-webhook.conf", "nginx/onebot-webhook.conf"],
+]);
+
+const PRESERVE_SETTING_KEYS = new Set([
+  "BOT_TOKEN",
+  "BOT_USERNAME",
+]);
+
+const ENV_BACKUP_PATHS = new Set([
+  ".env",
+  "web-panel/.env.local",
 ]);
 
 const RESTORE_PREFIXES = [
@@ -28,6 +36,10 @@ function resolveRestoreTarget(root, entryName) {
   const direct = RESTORE_PATHS.get(normalized);
   if (direct) {
     return path.join(root, direct);
+  }
+  const baseName = path.basename(normalized);
+  if (/^bot_data_\d{8}_\d{4}\.db$/i.test(baseName)) {
+    return path.join(root, "bot_data.db");
   }
 
   const prefix = RESTORE_PREFIXES.find((item) => normalized.startsWith(item));
@@ -48,6 +60,27 @@ function syncSqliteCompanion(root, dbFile, entryName) {
   fs.copyFileSync(source, destination);
 }
 
+async function readCurrentDeploymentSettings() {
+  const values = {};
+  for (const key of PRESERVE_SETTING_KEYS) {
+    const dbValue = await getSetting(key, "").catch(() => "");
+    const envValue = String(process.env[key] || "").trim();
+    const value = String(dbValue || envValue || "").trim();
+    if (value) values[key] = value;
+  }
+  return values;
+}
+
+function hasDbEntries(zip) {
+  return zip.getEntries().some((entry) => (
+    !entry.isDirectory
+    && (
+      ["bot_data.db", "bot_data.db-wal", "bot_data.db-shm"].includes(entry.entryName)
+      || /^bot_data_\d{8}_\d{4}\.db$/i.test(path.basename(entry.entryName))
+    )
+  ));
+}
+
 export async function POST(request) {
   const form = await request.formData();
   const file = form.get("archive");
@@ -63,6 +96,7 @@ export async function POST(request) {
 
   try {
     const zip = new AdmZip(temp);
+    const preservedSettings = await readCurrentDeploymentSettings();
     const adminSettingsEntry = zip.getEntry("admin-settings.json");
     let importedSettings = null;
     if (adminSettingsEntry && !adminSettingsEntry.isDirectory) {
@@ -76,9 +110,14 @@ export async function POST(request) {
       }
     }
 
+    if (hasDbEntries(zip)) {
+      closeSqlite();
+    }
+
     zip.getEntries().forEach((entry) => {
       if (entry.isDirectory) return;
       if (entry.entryName === "admin-settings.json") return;
+      if (ENV_BACKUP_PATHS.has(entry.entryName)) return;
       const target = resolveRestoreTarget(root, entry.entryName);
       if (!target) return;
       const resolved = path.resolve(target);
@@ -94,9 +133,14 @@ export async function POST(request) {
 
     if (importedSettings) {
       for (const [key, value] of Object.entries(importedSettings)) {
+        if (PRESERVE_SETTING_KEYS.has(key) && preservedSettings[key]) continue;
         await setSetting(key, value == null ? "" : String(value));
       }
     }
+    for (const [key, value] of Object.entries(preservedSettings)) {
+      await setSetting(key, value);
+    }
+    fs.writeFileSync(path.join(root, ".onebot-restart"), String(Date.now()), "utf8");
   } finally {
     fs.rmSync(temp, { force: true });
   }

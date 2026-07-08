@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable, Dict
 
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
+from loguru import logger
 
 from database import AsyncSessionLocal
 from services.blocked_users import BLOCKED_MESSAGE_FA, is_user_blocked
@@ -36,6 +37,7 @@ class BlockedUserMiddleware(BaseMiddleware):
         if not blocked:
             return await handler(event, data)
 
+        logger.warning(f"Blocked user {user.id} attempted to use the bot.")
         if isinstance(event, Message):
             await event.answer(BLOCKED_MESSAGE_FA)
         elif isinstance(event, CallbackQuery):

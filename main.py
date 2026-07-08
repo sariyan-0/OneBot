@@ -649,6 +649,13 @@ async def _prepare_bot_for_polling(bot: Bot) -> None:
             f"BOT_USERNAME روی @{expected_username} تنظیم شده اما توکن فعلی متعلق به @{me.username or '-'} است. "
             "اگر دیتابیس را به ربات جدید منتقل کرده‌اید، BOT_TOKEN ذخیره‌شده در admin_settings را بررسی کنید."
         )
+    webhook_info = await bot.get_webhook_info()
+    if webhook_info.url:
+        logger.warning(
+            f"Webhook فعال روی Telegram پیدا شد و قبل از polling پاک می‌شود: {webhook_info.url}"
+        )
+    if webhook_info.pending_update_count:
+        logger.info(f"Telegram pending updates before polling: {webhook_info.pending_update_count}")
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("Webhook تلگرام پاک شد و polling می‌تواند پیام‌های جدید را دریافت کند.")
 
@@ -790,9 +797,9 @@ async def main() -> None:
         dp = Dispatcher(storage=MemoryStorage())
 
         blocked_middleware = BlockedUserMiddleware(admin_ids=list(settings.admin_ids))
+        dp.message.middleware(ActivityLogMiddleware())
         dp.message.middleware(blocked_middleware)
         dp.callback_query.middleware(blocked_middleware)
-        dp.message.middleware(ActivityLogMiddleware())
         dp.message.middleware(
             RateLimitMiddleware(
                 rate_limit=6,
@@ -847,13 +854,16 @@ async def main() -> None:
             restart_event = asyncio.Event()
             watcher_task = asyncio.create_task(_watch_restart_marker(RESTART_MARKER, restart_event))
             await _prepare_bot_for_polling(bot)
+            allowed_updates = dp.resolve_used_update_types()
+            logger.info(f"Allowed Telegram updates: {allowed_updates}")
             polling_task = asyncio.create_task(
                 dp.start_polling(
                     bot,
-                    allowed_updates=dp.resolve_used_update_types(),
+                    allowed_updates=allowed_updates,
                     drop_pending_updates=True,
                 )
             )
+            logger.success("Polling task started; waiting for Telegram updates.")
             try:
                 done, _ = await asyncio.wait({polling_task, watcher_task}, return_when=asyncio.FIRST_COMPLETED)
                 if watcher_task in done and restart_event.is_set():

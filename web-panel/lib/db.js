@@ -256,6 +256,13 @@ function getSqlite() {
   return sqliteDb;
 }
 
+function closeSqlite() {
+  if (!sqliteDb) return;
+  sqliteDb.close();
+  sqliteDb = null;
+  sqliteSchemaReady = false;
+}
+
 function getPgPool() {
   if (!pgPool) {
     pgPool = new Pool({ connectionString: dbUrl().replace("postgresql+asyncpg://", "postgresql://") });
@@ -378,6 +385,7 @@ module.exports = {
   dbUrl,
   isPostgres,
   sqlitePath,
+  closeSqlite,
   query,
   one,
   many,

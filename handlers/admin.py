@@ -74,7 +74,7 @@ from database.crud import (
     get_all_discount_codes, get_all_plans, get_discount_code, get_plan,
     get_stats, get_user_by_telegram_id, get_user_by_username, update_plan,
     update_subscription_status, get_user_subscriptions, get_pending_payments,
-    get_or_create_user, get_enabled_inbound_ids, toggle_inbound_enabled,
+    get_or_create_user, get_enabled_inbound_ids, get_setting, toggle_inbound_enabled,
 )
 from database.models import Subscription, User
 from keyboards.admin import (
@@ -2514,6 +2514,16 @@ async def restore_recv_file(message: Message, state: FSMContext) -> None:
     wait = await message.answer("⏳ در حال دانلود و بازیابی...")
 
     try:
+        preserved_identity: dict[str, str] = {}
+        async with AsyncSessionLocal() as session:
+            for key, fallback in (
+                ("BOT_TOKEN", settings.bot_token),
+                ("BOT_USERNAME", settings.bot_username),
+            ):
+                value = (await get_setting(session, key, fallback or "")).strip()
+                if value:
+                    preserved_identity[key] = value
+
         # دانلود فایل
         file = await message.bot.get_file(doc.file_id)
         file_bytes_io = io.BytesIO()
@@ -2591,6 +2601,22 @@ async def restore_recv_file(message: Message, state: FSMContext) -> None:
         except Exception as _disp_err:
             logger.warning(f"dispose engine ناموفق (ری‌استارت ضروری): {_disp_err}")
 
+        if preserved_identity:
+            restore_conn = sqlite3.connect(str(db_path))
+            try:
+                restore_conn.execute(
+                    "CREATE TABLE IF NOT EXISTS admin_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+                )
+                for key, value in preserved_identity.items():
+                    restore_conn.execute(
+                        "INSERT INTO admin_settings(key, value) VALUES(?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (key, value),
+                    )
+                restore_conn.commit()
+            finally:
+                restore_conn.close()
+
         # cleanup تراکنش‌های کریپتوی منقضی‌شده در DB جدید
         try:
             from services.notifications import cleanup_stale_payments
@@ -2608,6 +2634,11 @@ async def restore_recv_file(message: Message, state: FSMContext) -> None:
             "⚠️ <b>توصیه:</b> برای اطمینان کامل، ربات را یک‌بار ری‌استارت کنید.",
             parse_mode="HTML",
         )
+        try:
+            from pathlib import Path as _Path
+            (_Path(__file__).resolve().parent.parent / ".onebot-restart").write_text(str(datetime.now().timestamp()), encoding="utf-8")
+        except Exception as marker_exc:
+            logger.warning(f"ثبت restart marker بعد از restore ناموفق بود: {marker_exc}")
         logger.success(f"دیتابیس از فایل {fname} بازیابی شد توسط ادمین {message.from_user.id}")
 
     except Exception as e:
