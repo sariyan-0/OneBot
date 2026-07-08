@@ -224,6 +224,17 @@ function bootstrapSqliteSchema() {
   ensureSqliteColumn("plans", "inbound_ids", "ALTER TABLE plans ADD COLUMN inbound_ids VARCHAR(256) NOT NULL DEFAULT ''");
   ensureSqliteColumn("plans", "sort_order", "ALTER TABLE plans ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
   ensureSqliteColumn("referral_commissions", "amount_toman", "ALTER TABLE referral_commissions ADD COLUMN amount_toman INTEGER NOT NULL DEFAULT 0");
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id ON subscriptions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_plan_id ON subscriptions(plan_id);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
+    CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id);
+    CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+    CREATE INDEX IF NOT EXISTS idx_tickets_status_updated ON tickets(status, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_test_subscription_records_created_at ON test_subscription_records(created_at);
+    CREATE INDEX IF NOT EXISTS idx_activity_logs_created_at ON activity_logs(created_at);
+  `);
 }
 
 function getSqlite() {
@@ -268,6 +279,14 @@ async function ensurePgSchema() {
       `ALTER TABLE plans ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS plan_id INTEGER`,
       `ALTER TABLE referral_commissions ADD COLUMN IF NOT EXISTS amount_toman INTEGER NOT NULL DEFAULT 0`,
+      `CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id ON subscriptions(user_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_subscriptions_plan_id ON subscriptions(plan_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status)`,
+      `CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)`,
+      `CREATE INDEX IF NOT EXISTS idx_tickets_status_updated ON tickets(status, updated_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_test_subscription_records_created_at ON test_subscription_records(created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_activity_logs_created_at ON activity_logs(created_at)`,
     ];
     for (const statement of statements) {
       try {

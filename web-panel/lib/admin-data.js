@@ -228,13 +228,15 @@ async function getTestSubscriptionUsers(limit = 200) {
        u.username,
        u.first_name,
        u.created_at AS user_created_at,
-       COUNT(DISTINCT s.id) AS subscription_count
-     FROM test_subscription_records tsr
+       COALESCE((SELECT COUNT(*) FROM subscriptions s WHERE s.user_id = u.id), 0) AS subscription_count
+     FROM (
+       SELECT id, telegram_id, created_at
+       FROM test_subscription_records
+       ORDER BY created_at DESC
+       LIMIT ?
+     ) tsr
      LEFT JOIN users u ON u.telegram_id = tsr.telegram_id
-     LEFT JOIN subscriptions s ON s.user_id = u.id
-     GROUP BY tsr.id, tsr.telegram_id, tsr.created_at, u.id, u.username, u.first_name, u.created_at
-     ORDER BY tsr.created_at DESC
-     LIMIT ?`,
+     ORDER BY tsr.created_at DESC`,
     [limit]
   ), []);
 }

@@ -233,11 +233,15 @@ def _sync_standalone_web_assets(panel_dir: Path) -> None:
     source_static = panel_dir / ".next" / "static"
     target_static = standalone_dir / ".next" / "static"
     if source_static.exists():
+        if target_static.exists():
+            shutil.rmtree(target_static, ignore_errors=True)
         shutil.copytree(source_static, target_static, dirs_exist_ok=True)
 
     source_public = panel_dir / "public"
     target_public = standalone_dir / "public"
     if source_public.exists():
+        if target_public.exists():
+            shutil.rmtree(target_public, ignore_errors=True)
         shutil.copytree(source_public, target_public, dirs_exist_ok=True)
 
 
