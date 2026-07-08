@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 import shutil
 import socket
@@ -338,12 +339,18 @@ def _ensure_nginx_upload_limit() -> None:
         return
 
     conf_path = Path("/etc/nginx/conf.d/onebot-upload-size.conf")
+    vhost_path = Path("/etc/nginx/conf.d/onebot-webhook.conf")
     desired = "# ONEBOT VPN Bot - shared upload size limit\n# 0 disables nginx request body size checks for panel uploads.\nclient_max_body_size 0;\n"
 
     try:
         current = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
         if current != desired:
             conf_path.write_text(desired, encoding="utf-8")
+        if vhost_path.exists():
+            current_vhost = vhost_path.read_text(encoding="utf-8")
+            updated_vhost = re.sub(r"client_max_body_size\s+[^;]+;", "client_max_body_size 0;", current_vhost)
+            if updated_vhost != current_vhost:
+                vhost_path.write_text(updated_vhost, encoding="utf-8")
     except OSError as exc:
         logger.warning(f"Could not write nginx upload limit config: {exc}")
         return

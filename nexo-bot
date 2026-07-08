@@ -230,6 +230,11 @@ _ensure_nginx_upload_limit() {
 client_max_body_size 0;
 NGINXCONF
 
+  local vhost_conf="/etc/nginx/conf.d/onebot-webhook.conf"
+  if [[ -f "$vhost_conf" ]]; then
+    sed -i -E 's/client_max_body_size[[:space:]]+[^;]+;/client_max_body_size 0;/g' "$vhost_conf" 2>/dev/null || true
+  fi
+
   if nginx -t 2>/dev/null; then
     systemctl enable nginx --now 2>/dev/null || true
     systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || true
