@@ -58,6 +58,9 @@ export async function POST(request) {
     if (!value) continue;
     if (!force && String(dbValues[key] || "") === value) continue;
     await setSetting(key, value);
+    if (key === "BOT_TOKEN") {
+      await setSetting("BOT_TOKEN_SOURCE", "env");
+    }
     synced.push(key);
   }
 

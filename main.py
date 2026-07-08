@@ -18,7 +18,7 @@ from contextlib import suppress
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError, TelegramUnauthorizedError
+from aiogram.exceptions import TelegramAPIError, TelegramConflictError, TelegramUnauthorizedError
 from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -248,6 +248,9 @@ def _sync_standalone_web_assets(panel_dir: Path) -> None:
 RESTART_MARKER = Path(__file__).resolve().parent / ".onebot-restart"
 INSTANCE_LOCK = Path(__file__).resolve().parent / ".onebot-main.lock"
 WEB_PANEL_PID_FILE = Path(__file__).resolve().parent / ".onebot-web-panel.pid"
+BOT_TOKEN_SOURCE_KEY = "BOT_TOKEN_SOURCE"
+BOT_TOKEN_SOURCE_ENV = "env"
+BOT_TOKEN_SOURCE_PANEL = "panel"
 
 
 def _read_lock_pid(lock_path: Path) -> int | None:
@@ -566,76 +569,143 @@ async def _configured_bot_username() -> str:
     return configured
 
 
+def _token_id_prefix(token: str) -> str:
+    prefix = token.split(":", 1)[0].strip()
+    return prefix if prefix.isdigit() else "unknown"
+
+
+def _identity_label(identity: tuple[str, int] | None) -> str:
+    if not identity:
+        return "invalid/unavailable"
+    username, bot_id = identity
+    return f"@{username or '-'} (id={bot_id})"
+
+
+async def _probe_token_identity(token: str, source: str) -> tuple[str, int] | None:
+    probe_bot: Bot | None = None
+    try:
+        probe_bot = Bot(token=token)
+        me = await probe_bot.get_me()
+        return (me.username or "", int(me.id))
+    except Exception as exc:
+        logger.warning(
+            f"بررسی BOT_TOKEN {source} ناموفق بود "
+            f"(token id prefix={_token_id_prefix(token)}): {exc}"
+        )
+        return None
+    finally:
+        if probe_bot is not None:
+            await probe_bot.session.close()
+
+
+async def _store_selected_bot_token(
+    session,
+    *,
+    token: str,
+    source: str,
+    identity: tuple[str, int] | None,
+) -> None:
+    await set_setting(session, "BOT_TOKEN", token)
+    await set_setting(session, BOT_TOKEN_SOURCE_KEY, source)
+    if identity and identity[0]:
+        await set_setting(session, "BOT_USERNAME", identity[0])
+
+
 async def _resolve_bot_token() -> str:
     """
     BOT_TOKEN را از admin_settings دیتابیس می‌خواند و اگر خالی بود،
     از محیط اجرا / .env استفاده می‌کند.
 
-    این باعث می‌شود وقتی توکن از web panel ذخیره می‌شود،
-    مقدار جدید حتی اگر .env قدیمی باشد، برنده شود.
+    BOT_USERNAME دیگر برای انتخاب توکن استفاده نمی‌شود؛ هویت واقعی ربات
+    با getMe از خود BOT_TOKEN خوانده می‌شود. اگر web panel توکن را ذخیره
+    کرده باشد BOT_TOKEN_SOURCE=panel باعث می‌شود DB برنده شود، وگرنه
+    .env می‌تواند دیتابیس restore شده از ربات قبلی را اصلاح کند.
     """
     env_token = settings.bot_token.strip()
-    expected_username = (await _configured_bot_username()).lower()
-
-    async def _probe_token(token: str) -> tuple[str, int] | None:
-        probe_bot: Bot | None = None
-        try:
-            probe_bot = Bot(token=token)
-            me = await probe_bot.get_me()
-            return (me.username or "").lower(), int(me.id)
-        except Exception as exc:
-            logger.warning(f"بررسی BOT_TOKEN ناموفق بود: {exc}")
-            return None
-        finally:
-            if probe_bot is not None:
-                await probe_bot.session.close()
 
     try:
         async with AsyncSessionLocal() as session:
             db_token = (await get_setting(session, "BOT_TOKEN", "")).strip()
+            token_source = (await get_setting(session, BOT_TOKEN_SOURCE_KEY, "")).strip().lower()
             if db_token:
                 if env_token and env_token != db_token:
                     logger.warning(
                         "BOT_TOKEN ذخیره‌شده در دیتابیس با BOT_TOKEN محیط/.env متفاوت است. "
-                        "این حالت بعد از انتقال دیتابیس به ربات جدید می‌تواند باعث شود polling روی ربات قبلی اجرا شود."
+                        "هویت هر دو توکن از Telegram خوانده می‌شود تا restore بکاپ ربات قبلی، polling را به ربات قدیمی نبرد."
                     )
-                    if expected_username:
-                        db_identity = await _probe_token(db_token)
-                        env_identity = await _probe_token(env_token)
-                        db_matches = bool(db_identity and db_identity[0] == expected_username)
-                        env_matches = bool(env_identity and env_identity[0] == expected_username)
-                        if env_matches and not db_matches:
-                            logger.warning(
-                                f"BOT_USERNAME روی @{expected_username} تنظیم شده و فقط توکن محیط با آن تطبیق دارد؛ "
-                                "BOT_TOKEN دیتابیس با مقدار محیط همگام شد."
-                            )
-                            await set_setting(session, "BOT_TOKEN", env_token)
-                            return env_token
-                        if db_matches:
-                            logger.info("BOT_TOKEN دیتابیس با BOT_USERNAME تنظیم‌شده تطبیق دارد؛ همان استفاده می‌شود.")
-                        elif env_identity and not db_identity:
-                            logger.warning("BOT_TOKEN دیتابیس معتبر نبود؛ از BOT_TOKEN محیط استفاده می‌شود.")
-                            await set_setting(session, "BOT_TOKEN", env_token)
-                            return env_token
-                    else:
-                        db_identity = await _probe_token(db_token)
-                        if not db_identity:
-                            env_identity = await _probe_token(env_token)
-                            if env_identity:
-                                logger.warning("BOT_TOKEN دیتابیس معتبر نبود؛ از BOT_TOKEN محیط استفاده می‌شود.")
-                                await set_setting(session, "BOT_TOKEN", env_token)
-                                return env_token
-                        logger.warning(
-                            "BOT_USERNAME تنظیم نشده، بنابراین برای جلوگیری از تغییر ناخواسته، BOT_TOKEN دیتابیس استفاده می‌شود. "
-                            "برای مهاجرت امن به ربات جدید، BOT_USERNAME و BOT_TOKEN جدید را در .env/پنل ذخیره کنید."
+
+                    db_identity, env_identity = await asyncio.gather(
+                        _probe_token_identity(db_token, "database"),
+                        _probe_token_identity(env_token, ".env"),
+                    )
+                    logger.warning(
+                        "Telegram identity check: "
+                        f"database={_identity_label(db_identity)}, "
+                        f"env={_identity_label(env_identity)}, "
+                        f"source={token_source or 'unknown'}"
+                    )
+
+                    if token_source == BOT_TOKEN_SOURCE_PANEL and db_identity:
+                        logger.info(
+                            "BOT_TOKEN_SOURCE=panel است؛ توکن ذخیره‌شده در پنل استفاده می‌شود "
+                            "و BOT_USERNAME فقط برای نمایش/لینک‌ها همگام می‌شود."
                         )
-                logger.info("BOT_TOKEN از admin_settings خوانده شد.")
+                        if db_identity[0]:
+                            await set_setting(session, "BOT_USERNAME", db_identity[0])
+                        return db_token
+
+                    if env_identity:
+                        logger.warning(
+                            "از BOT_TOKEN محیط/.env استفاده می‌شود و مقدار دیتابیس با آن همگام شد. "
+                            "برای override عمدی از پنل، دوباره توکن را در Settings ذخیره کنید."
+                        )
+                        await _store_selected_bot_token(
+                            session,
+                            token=env_token,
+                            source=BOT_TOKEN_SOURCE_ENV,
+                            identity=env_identity,
+                        )
+                        return env_token
+
+                    if db_identity:
+                        logger.warning(
+                            "BOT_TOKEN محیط/.env قابل تأیید نبود؛ موقتاً توکن دیتابیس استفاده می‌شود."
+                        )
+                        if db_identity[0]:
+                            await set_setting(session, "BOT_USERNAME", db_identity[0])
+                        return db_token
+
+                    logger.warning(
+                        "هیچ‌کدام از توکن‌های دیتابیس و .env قابل تأیید نبودند؛ "
+                        "برای نمایش خطای دقیق‌تر از مقدار .env استفاده می‌شود."
+                    )
+                    return env_token
+
+                db_identity = await _probe_token_identity(db_token, "database")
+                if db_identity:
+                    logger.info(f"BOT_TOKEN از admin_settings خوانده شد: {_identity_label(db_identity)}")
+                    if db_identity[0]:
+                        await set_setting(session, "BOT_USERNAME", db_identity[0])
+                else:
+                    logger.warning("BOT_TOKEN دیتابیس قابل تأیید نبود؛ startup خطای دقیق Telegram را ثبت می‌کند.")
                 return db_token
+
+            if env_token:
+                env_identity = await _probe_token_identity(env_token, ".env")
+                if env_identity:
+                    await _store_selected_bot_token(
+                        session,
+                        token=env_token,
+                        source=BOT_TOKEN_SOURCE_ENV,
+                        identity=env_identity,
+                    )
+                    logger.info(f"BOT_TOKEN از .env استفاده و در دیتابیس همگام شد: {_identity_label(env_identity)}")
+                else:
+                    logger.warning("BOT_TOKEN محیط/.env قابل تأیید نبود؛ startup خطای دقیق Telegram را ثبت می‌کند.")
+                return env_token
     except Exception as exc:
         logger.warning(f"خواندن BOT_TOKEN از دیتابیس ناموفق بود: {exc}")
 
-    if env_token:
-        logger.info("BOT_TOKEN از .env استفاده شد.")
     return env_token
 
 
@@ -646,8 +716,8 @@ async def _prepare_bot_for_polling(bot: Bot) -> None:
     expected_username = await _configured_bot_username()
     if expected_username and (me.username or "").lower() != expected_username.lower():
         logger.warning(
-            f"BOT_USERNAME روی @{expected_username} تنظیم شده اما توکن فعلی متعلق به @{me.username or '-'} است. "
-            "اگر دیتابیس را به ربات جدید منتقل کرده‌اید، BOT_TOKEN ذخیره‌شده در admin_settings را بررسی کنید."
+            f"BOT_USERNAME ذخیره‌شده @{expected_username} با توکن فعلی (@{me.username or '-'}) فرق دارد. "
+            "BOT_USERNAME برای انتخاب توکن لازم نیست و فقط برای لینک/نمایش استفاده می‌شود."
         )
     webhook_info = await bot.get_webhook_info()
     if webhook_info.url:
@@ -878,6 +948,16 @@ async def main() -> None:
                 logger.error(
                     "BOT_TOKEN نامعتبر است یا دسترسی Telegram رد شده است. "
                     "Bot polling متوقف شد، اما web panel و webhook server همچنان فعال می‌مانند."
+                )
+                if scheduler is not None:
+                    scheduler.shutdown(wait=False)
+                    scheduler = None
+                await asyncio.Event().wait()
+            except TelegramConflictError as exc:
+                logger.error(
+                    f"Telegram polling conflict: {exc}. "
+                    "یک نمونه دیگر از همین ربات هنوز در حال getUpdates/polling است یا webhook قدیمی فعال مانده. "
+                    "نمونه قبلی را روی سرور/بات قبلی متوقف کنید، سپس این worker را restart کنید."
                 )
                 if scheduler is not None:
                     scheduler.shutdown(wait=False)

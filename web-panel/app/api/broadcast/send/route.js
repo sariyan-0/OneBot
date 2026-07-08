@@ -1,15 +1,16 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { many, getSetting } from "../../../../lib/db";
+import { many } from "../../../../lib/db";
 import { isAdminAuth } from "../../../../lib/auth";
 import { redirectSeeOther } from "../../../../lib/redirect";
+import { getTelegramBotToken } from "../../../../lib/telegram-token";
 
 export const runtime = "nodejs";
 
 const MAX_TELEGRAM_PHOTO_BYTES = 10 * 1024 * 1024;
 
 async function botToken() {
-  return String((await getSetting("BOT_TOKEN", "")) || process.env.BOT_TOKEN || "").trim();
+  return getTelegramBotToken();
 }
 
 async function telegramRequest(token, method, body) {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { exec, one, setSetting, getSetting } from "../../../../lib/db";
+import { exec, one, setSetting } from "../../../../lib/db";
 import { redirectSeeOther } from "../../../../lib/redirect";
+import { getTelegramBotToken } from "../../../../lib/telegram-token";
 
 async function telegramRequest(token, method, body) {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
@@ -91,7 +92,7 @@ export async function POST(request, { params }) {
     if (!user?.telegram_id) {
       return NextResponse.json({ ok: false, error: "Customer has no Telegram ID" }, { status: 400 });
     }
-    const token = String((await getSetting("BOT_TOKEN", "")) || process.env.BOT_TOKEN || "").trim();
+    const token = await getTelegramBotToken();
     if (!token) {
       return NextResponse.json({ ok: false, error: "BOT_TOKEN is not configured" }, { status: 400 });
     }

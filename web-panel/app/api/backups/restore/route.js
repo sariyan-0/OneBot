@@ -17,6 +17,7 @@ const RESTORE_PATHS = new Map([
 
 const PRESERVE_SETTING_KEYS = new Set([
   "BOT_TOKEN",
+  "BOT_TOKEN_SOURCE",
   "BOT_USERNAME",
 ]);
 

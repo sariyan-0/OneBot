@@ -9,6 +9,7 @@ import {
   getPanelConnectionConfig,
   updateClient,
 } from "../../../../../lib/xui";
+import { getTelegramBotToken } from "../../../../../lib/telegram-token";
 
 function parseOrderId(orderId) {
   const raw = String(orderId || "");
@@ -27,7 +28,7 @@ function parseOrderId(orderId) {
 }
 
 async function getBotToken() {
-  return String((await getSetting("BOT_TOKEN", "")) || process.env.BOT_TOKEN || "").trim();
+  return getTelegramBotToken();
 }
 
 async function sendTelegramMessage(chatId, text) {

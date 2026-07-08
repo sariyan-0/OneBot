@@ -37,7 +37,7 @@ export default async function SettingsPage() {
 
       <Section
         title="Telegram bot"
-        description="Save the bot token here so the web panel and the Python worker can restart with the latest database-backed Telegram credentials."
+        description="Save the bot token here so the web panel and Python worker restart with the intended Telegram bot. The username is detected from the token."
         icon={Bot}
       >
         <form action="/api/settings" method="post" className="grid" style={{ gap: 14 }}>
@@ -51,19 +51,19 @@ export default async function SettingsPage() {
               />
             </div>
             <div className="field-full">
-              <label>Bot username</label>
+              <label>Bot username (optional)</label>
               <input
                 name="BOT_USERNAME"
                 defaultValue={settings.BOT_USERNAME || ""}
-                placeholder="your_bot_username"
+                placeholder="auto-detected from token"
               />
             </div>
           </div>
           <div className="notice" style={{ display: "grid", gap: 6 }}>
             <strong>Restart behavior</strong>
-            <div className="muted">Saving these fields updates the database and writes a restart marker so the bot reloads with the intended Telegram identity.</div>
+            <div className="muted">Saving the token updates the database, marks it as a panel override, and writes a restart marker.</div>
           </div>
-          <button type="submit">Save bot identity</button>
+          <button type="submit">Save bot token</button>
         </form>
       </Section>
 

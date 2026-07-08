@@ -26,7 +26,7 @@ export default async function BackupsPage() {
 
         <section className="section">
           <h3>Restore backup</h3>
-          <p className="muted">Upload a previously created backup zip to restore database settings, DB files, logs, and branding files. The current Telegram bot token and username are preserved so restoring an old backup does not move polling back to another bot. Env files from the archive are ignored; if the archive contains a 3X-UI panel DB dump, import that file separately inside 3X-UI.</p>
+          <p className="muted">Upload a previously created backup zip to restore database settings, DB files, logs, and branding files. The current Telegram bot token, token source, and detected username are preserved so restoring an old backup does not move polling back to another bot. Env files from the archive are ignored; if the archive contains a 3X-UI panel DB dump, import that file separately inside 3X-UI.</p>
           <form action="/api/backups/restore" method="post" encType="multipart/form-data" className="grid" style={{ gap: 12 }}>
             <input type="file" name="archive" accept=".zip" required />
             <button type="submit" className="btn secondary"><RotateCcw size={16} /> Restore zip</button>

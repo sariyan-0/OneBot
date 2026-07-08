@@ -7,6 +7,7 @@ export const revalidate = 0;
 import { exec, many, one, getSetting, isPostgres } from "../../../../lib/db";
 import { isAdminAuth } from "../../../../lib/auth";
 import { redirectSeeOther } from "../../../../lib/redirect";
+import { getTelegramBotToken } from "../../../../lib/telegram-token";
 
 function parseAdminTelegramIds() {
   return String(process.env.ADMIN_IDS || "")
@@ -99,7 +100,7 @@ async function getAdminSenderId() {
 }
 
 async function sendTelegramMessage(chatId, text) {
-  const token = String((await getSetting("BOT_TOKEN", "")) || process.env.BOT_TOKEN || "").trim();
+  const token = await getTelegramBotToken();
   if (!token || !chatId) return;
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
@@ -113,7 +114,7 @@ async function sendTelegramMessage(chatId, text) {
 }
 
 async function sendTelegramTicketReply(chatId, ticketId, subject, body) {
-  const token = String((await getSetting("BOT_TOKEN", "")) || process.env.BOT_TOKEN || "").trim();
+  const token = await getTelegramBotToken();
   if (!token || !chatId) return;
   const activeSessions = String(await getSetting("active_ticket_session_ids", "") || "")
     .split(",")

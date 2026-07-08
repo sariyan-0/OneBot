@@ -50,15 +50,19 @@ async def _resolve_bot_token() -> str:
     BOT_TOKEN را از admin_settings دیتابیس می‌خواند و اگر خالی بود،
     از env / .env استفاده می‌کند.
     """
+    env_token = settings.bot_token.strip()
     try:
         async with AsyncSessionLocal() as session:
-            token = (await get_setting(session, "BOT_TOKEN", "")).strip()
-            if token:
-                return token
+            db_token = (await get_setting(session, "BOT_TOKEN", "")).strip()
+            token_source = (await get_setting(session, "BOT_TOKEN_SOURCE", "")).strip().lower()
+            if db_token and env_token and db_token != env_token and token_source != "panel":
+                return env_token
+            if db_token:
+                return db_token
     except Exception as exc:
         logger.debug(f"Webhook token lookup skipped: {exc}")
 
-    return settings.bot_token.strip()
+    return env_token
 
 
 # ──────────────────────────────────────────────

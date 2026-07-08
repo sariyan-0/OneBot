@@ -2518,6 +2518,7 @@ async def restore_recv_file(message: Message, state: FSMContext) -> None:
         async with AsyncSessionLocal() as session:
             for key, fallback in (
                 ("BOT_TOKEN", settings.bot_token),
+                ("BOT_TOKEN_SOURCE", ""),
                 ("BOT_USERNAME", settings.bot_username),
             ):
                 value = (await get_setting(session, key, fallback or "")).strip()

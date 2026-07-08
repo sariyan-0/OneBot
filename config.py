@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     # اختیاری: اگه خالی باشد، امضا verify نمی‌شود (توصیه نمی‌شود در production)
     maxelpay_webhook_secret: str = Field(default="", description="Webhook secret برای verify امضای MaxelPay")
     # نام کاربری ربات برای ساخت لینک بازگشت (اختیاری)
-    bot_username: str = Field(default="", description="یوزرنیم ربات (بدون @) برای لینک بازگشت")
+    bot_username: str = Field(default="", description="یوزرنیم اختیاری ربات (بدون @)، از BOT_TOKEN همگام می‌شود")
 
     # ===== Webhook Server =====
     # پورت HTTP برای دریافت IPN از NOWPayments

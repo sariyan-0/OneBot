@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { getSetting, one } from "../../../../../lib/db";
+import { one } from "../../../../../lib/db";
+import { getTelegramBotToken } from "../../../../../lib/telegram-token";
 
 export async function GET(_request, { params }) {
   const paymentId = Number(params.id);
@@ -16,7 +17,7 @@ export async function GET(_request, { params }) {
     return NextResponse.json({ ok: false, error: "Receipt image not found" }, { status: 404 });
   }
 
-  const botToken = String((await getSetting("BOT_TOKEN", "")) || process.env.BOT_TOKEN || "").trim();
+  const botToken = await getTelegramBotToken();
   if (!botToken) {
     return NextResponse.json({ ok: false, error: "BOT_TOKEN is not configured" }, { status: 500 });
   }

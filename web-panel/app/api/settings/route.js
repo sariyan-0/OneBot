@@ -41,7 +41,11 @@ export async function POST(request) {
   const form = await request.formData();
   for (const key of KEYS) {
     if (form.has(key)) {
-      await setSetting(key, String(form.get(key) ?? ""));
+      const value = String(form.get(key) ?? "");
+      await setSetting(key, value);
+      if (key === "BOT_TOKEN") {
+        await setSetting("BOT_TOKEN_SOURCE", value.trim() ? "panel" : "");
+      }
     }
   }
   await fs.writeFile(path.join(getRootDir(), ".onebot-restart"), String(Date.now()), "utf8");

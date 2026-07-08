@@ -3,6 +3,7 @@ import fs from "fs/promises";
 import path from "path";
 import { getSetting, setSetting } from "../../../lib/db";
 import { redirectSeeOther } from "../../../lib/redirect";
+import { getTelegramBotToken } from "../../../lib/telegram-token";
 
 export const runtime = "nodejs";
 
@@ -32,7 +33,7 @@ async function savePreview(file, prefix) {
 }
 
 async function telegramRequest(method, body) {
-  const token = String((await getSetting("BOT_TOKEN", "")) || process.env.BOT_TOKEN || "").trim();
+  const token = await getTelegramBotToken();
   if (!token) throw new Error("BOT_TOKEN is not configured");
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: "POST",
@@ -47,7 +48,7 @@ async function telegramRequest(method, body) {
 }
 
 async function uploadBannerFile(file, prefix) {
-  const token = String((await getSetting("BOT_TOKEN", "")) || process.env.BOT_TOKEN || "").trim();
+  const token = await getTelegramBotToken();
   const chatId = adminChatId();
   if (!chatId) {
     throw new Error("ADMIN_IDS is required to generate Telegram file_id values");
