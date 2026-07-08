@@ -1,33 +1,101 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-import { exec, many, one, getSetting } from "../../../../lib/db";
+import { exec, many, one, getSetting, isPostgres } from "../../../../lib/db";
+import { isAdminAuth } from "../../../../lib/auth";
 import { redirectSeeOther } from "../../../../lib/redirect";
 
+function parseAdminTelegramIds() {
+  return String(process.env.ADMIN_IDS || "")
+    .split(/[,\s]+/)
+    .map((part) => Number(part.trim()))
+    .filter((id) => Number.isInteger(id) && id > 0);
+}
+
+function adminEnabledSql() {
+  return isPostgres() ? "is_admin = TRUE" : "is_admin = 1";
+}
+
+function adminValueSql() {
+  return isPostgres() ? "TRUE" : "1";
+}
+
+async function getSupportUsername() {
+  return String(
+    (await getSetting("WEB_ADMIN_USERNAME", "")) ||
+    process.env.WEB_ADMIN_USERNAME ||
+    "support"
+  ).trim() || "support";
+}
+
+async function markAdmin(userId) {
+  await exec(
+    `UPDATE users SET is_admin = ${adminValueSql()}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [userId]
+  );
+}
+
+async function upsertAdminSender(telegramId, username) {
+  if (isPostgres()) {
+    await exec(
+      `INSERT INTO users(telegram_id, username, first_name, is_admin, created_at, updated_at)
+       VALUES(?, ?, ?, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       ON CONFLICT (telegram_id) DO UPDATE SET
+         is_admin = TRUE,
+         username = COALESCE(users.username, EXCLUDED.username),
+         first_name = COALESCE(users.first_name, EXCLUDED.first_name),
+         updated_at = CURRENT_TIMESTAMP`,
+      [telegramId, username, "Support"]
+    );
+  } else {
+    await exec(
+      `INSERT INTO users(telegram_id, username, first_name, is_admin, created_at, updated_at)
+       VALUES(?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       ON CONFLICT(telegram_id) DO UPDATE SET
+         is_admin = 1,
+         username = COALESCE(users.username, excluded.username),
+         first_name = COALESCE(users.first_name, excluded.first_name),
+         updated_at = CURRENT_TIMESTAMP`,
+      [telegramId, username, "Support"]
+    );
+  }
+
+  const createdAdmin = await one("SELECT id FROM users WHERE telegram_id = ? ORDER BY id DESC LIMIT 1", [telegramId]);
+  return createdAdmin?.id || null;
+}
+
 async function getAdminSenderId() {
-  const existingAdmin = await one("SELECT id FROM users WHERE is_admin = 1 ORDER BY id ASC LIMIT 1");
+  const existingAdmin = await one(`SELECT id FROM users WHERE ${adminEnabledSql()} ORDER BY id ASC LIMIT 1`);
   if (existingAdmin?.id) {
     return existingAdmin.id;
+  }
+
+  const supportUsername = await getSupportUsername();
+  for (const telegramId of parseAdminTelegramIds()) {
+    const adminUser = await one("SELECT id FROM users WHERE telegram_id = ? ORDER BY id ASC LIMIT 1", [telegramId]);
+    if (adminUser?.id) {
+      await markAdmin(adminUser.id);
+      return adminUser.id;
+    }
+
+    const createdFromEnv = await upsertAdminSender(telegramId, supportUsername);
+    if (createdFromEnv) {
+      return createdFromEnv;
+    }
   }
 
   const fallbackAdmin = await one("SELECT id, is_admin FROM users WHERE telegram_id = 0 ORDER BY id ASC LIMIT 1");
   if (fallbackAdmin?.id) {
     if (!fallbackAdmin.is_admin) {
-      await exec("UPDATE users SET is_admin = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [fallbackAdmin.id]);
+      await markAdmin(fallbackAdmin.id);
     }
     return fallbackAdmin.id;
   }
 
-  const supportUsername = String((await getSetting("WEB_ADMIN_USERNAME", "")) || "support").trim() || "support";
-  await exec(
-    "INSERT OR IGNORE INTO users(telegram_id, username, first_name, is_admin, created_at, updated_at) VALUES(0, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-    [supportUsername, "Support"]
-  );
-  await exec("UPDATE users SET is_admin = 1, updated_at = CURRENT_TIMESTAMP WHERE telegram_id = 0");
-  const createdAdmin = await one("SELECT id FROM users WHERE telegram_id = 0 ORDER BY id DESC LIMIT 1");
-  return createdAdmin?.id || null;
+  return upsertAdminSender(0, supportUsername);
 }
 
 async function sendTelegramMessage(chatId, text) {
@@ -121,7 +189,28 @@ function redirectToTicket(request, ticketId, status = "ok") {
   return redirectSeeOther(request, url);
 }
 
+async function readTicketAction(request) {
+  const contentType = String(request.headers.get("content-type") || "");
+  if (contentType.includes("application/json")) {
+    const payload = await request.json().catch(() => ({}));
+    return {
+      action: String(payload.action || ""),
+      body: String(payload.body || "").trim(),
+    };
+  }
+
+  const form = await request.formData();
+  return {
+    action: String(form.get("action") || ""),
+    body: String(form.get("body") || "").trim(),
+  };
+}
+
 export async function GET(request, { params }) {
+  if (!(await isAdminAuth(cookies()))) {
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
   const ticketId = Number(params.id);
   if (!Number.isFinite(ticketId)) {
     return NextResponse.json({ ok: false, error: "Invalid ticket id" }, { status: 400 });
@@ -145,20 +234,24 @@ export async function GET(request, { params }) {
 
 export async function POST(request, { params }) {
   try {
+    const jsonMode = wantsJson(request);
+    if (!(await isAdminAuth(cookies()))) {
+      return jsonMode
+        ? NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 })
+        : redirectSeeOther(request, "/login");
+    }
+
     const ticketId = Number(params.id);
     if (!Number.isFinite(ticketId)) {
       return NextResponse.json({ ok: false, error: "Invalid ticket id" }, { status: 400 });
     }
 
-    const form = await request.formData();
-    const action = String(form.get("action") || "");
-    const body = String(form.get("body") || "").trim();
+    const { action, body } = await readTicketAction(request);
 
     const ticket = await one("SELECT * FROM tickets WHERE id = ?", [ticketId]);
     if (!ticket) {
       return NextResponse.json({ ok: false, error: "Ticket not found" }, { status: 404 });
     }
-    const jsonMode = wantsJson(request);
 
     if (action === "reply") {
       if (!body) {
@@ -168,7 +261,7 @@ export async function POST(request, { params }) {
       }
       const senderId = await getAdminSenderId();
       if (!senderId) {
-        return NextResponse.json({ ok: false, error: "No admin user exists in the database" }, { status: 409 });
+        return NextResponse.json({ ok: false, error: "Unable to create an admin sender for this reply" }, { status: 500 });
       }
 
       await exec(

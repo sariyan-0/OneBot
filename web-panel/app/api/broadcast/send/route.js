@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
+import { cookies } from "next/headers";
 import { many, getSetting } from "../../../../lib/db";
+import { isAdminAuth } from "../../../../lib/auth";
 import { redirectSeeOther } from "../../../../lib/redirect";
 
 export const runtime = "nodejs";
+
+const MAX_TELEGRAM_PHOTO_BYTES = 10 * 1024 * 1024;
 
 async function botToken() {
   return String((await getSetting("BOT_TOKEN", "")) || process.env.BOT_TOKEN || "").trim();
@@ -18,62 +20,106 @@ async function telegramRequest(token, method, body) {
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(`Telegram API error: ${res.status}`);
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.description || `Telegram API error: ${res.status}`);
   }
   return res.json();
 }
 
-export async function POST(request) {
+async function readBroadcastPayload(request) {
+  const contentType = String(request.headers.get("content-type") || "");
+  if (contentType.includes("application/json")) {
+    const payload = await request.json().catch(() => ({}));
+    return {
+      message: String(payload.message || "").trim(),
+      image: null,
+    };
+  }
+
   const form = await request.formData();
-  const message = String(form.get("message") || "").trim();
-  const image = form.get("image");
+  return {
+    message: String(form.get("message") || "").trim(),
+    image: form.get("image"),
+  };
+}
+
+function errorResponse(request, isClientRequest, error, status = 400) {
+  return isClientRequest
+    ? NextResponse.json({ ok: false, error }, { status })
+    : redirectSeeOther(request, `/admin/broadcast?error=${encodeURIComponent(error)}`);
+}
+
+async function sendPhoto(token, chatId, caption, image, buffer) {
+  const formData = new FormData();
+  formData.append("chat_id", String(chatId));
+  formData.append("caption", caption);
+  formData.append("photo", new Blob([buffer], { type: image.type || "image/png" }), image.name || "broadcast.png");
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.description || `Telegram API error: ${res.status}`);
+  }
+}
+
+export async function POST(request) {
+  const isClientRequest = request.headers.get("x-onebot-client") === "1";
+  if (!(await isAdminAuth(cookies()))) {
+    return errorResponse(request, isClientRequest, "Unauthorized", 401);
+  }
+
+  const { message, image } = await readBroadcastPayload(request);
   const token = await botToken();
   const users = await many("SELECT telegram_id FROM users WHERE telegram_id IS NOT NULL ORDER BY id ASC LIMIT 10000");
-  const isClientRequest = request.headers.get("x-onebot-client") === "1";
 
   if (!message) {
-    return NextResponse.json({ ok: false, error: "Message is required" }, { status: 400 });
+    return errorResponse(request, isClientRequest, "Message is required", 400);
   }
   if (!token) {
-    const error = "BOT_TOKEN is not configured";
-    return isClientRequest
-      ? NextResponse.json({ ok: false, error }, { status: 400 })
-      : redirectSeeOther(request, `/admin/broadcast?error=${encodeURIComponent(error)}`);
+    return errorResponse(request, isClientRequest, "BOT_TOKEN is not configured", 400);
   }
 
+  let sent = 0;
+  let failed = 0;
+  let firstError = "";
+
   if (image && typeof image.arrayBuffer === "function" && image.size > 0) {
+    if (image.type && !String(image.type).startsWith("image/")) {
+      return errorResponse(request, isClientRequest, "Broadcast upload must be an image file", 400);
+    }
+    if (image.size > MAX_TELEGRAM_PHOTO_BYTES) {
+      return errorResponse(request, isClientRequest, "Broadcast image is too large. Maximum size is 10 MB", 400);
+    }
+
     const buffer = Buffer.from(await image.arrayBuffer());
     for (const user of users) {
-      const formData = new FormData();
-      formData.append("chat_id", String(user.telegram_id));
-      formData.append("caption", message);
-      formData.append("photo", new Blob([buffer], { type: image.type || "image/png" }), image.name || "broadcast.png");
-      const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        const error = data?.description || `Telegram API error: ${res.status}`;
-        return isClientRequest
-          ? NextResponse.json({ ok: false, error }, { status: 502 })
-          : redirectSeeOther(request, `/admin/broadcast?error=${encodeURIComponent(error)}`);
+      try {
+        await sendPhoto(token, user.telegram_id, message, image, buffer);
+        sent += 1;
+      } catch (err) {
+        failed += 1;
+        firstError ||= err.message || "Telegram send failed";
       }
     }
   } else {
     for (const user of users) {
       try {
         await telegramRequest(token, "sendMessage", { chat_id: user.telegram_id, text: message });
+        sent += 1;
       } catch (err) {
-        const error = err.message || "Telegram send failed";
-        return isClientRequest
-          ? NextResponse.json({ ok: false, error }, { status: 502 })
-          : redirectSeeOther(request, `/admin/broadcast?error=${encodeURIComponent(error)}`);
+        failed += 1;
+        firstError ||= err.message || "Telegram send failed";
       }
     }
   }
 
+  if (!sent && failed) {
+    return errorResponse(request, isClientRequest, firstError || "Telegram send failed", 502);
+  }
+
   return isClientRequest
-    ? NextResponse.json({ ok: true })
+    ? NextResponse.json({ ok: true, sent, failed, error: firstError || "" })
     : redirectSeeOther(request, "/admin/broadcast");
 }

@@ -10,7 +10,7 @@ let sqliteSchemaReady = false;
 let pgSchemaReady = false;
 
 function dbUrl() {
-  return process.env.DB_URL || "sqlite+aiosqlite:///./bot_data.db";
+  return process.env.DB_URL || "";
 }
 
 function sharedDataDir() {
@@ -22,25 +22,29 @@ function sharedDataDir() {
 }
 
 function isPostgres() {
-  return /^postgres(ql)?:\/\//i.test(dbUrl());
+  return /^postgres(?:ql)?(?:\+[a-z0-9_]+)?:\/\//i.test(dbUrl());
 }
 
 function sqlitePath() {
   if (isPostgres()) return null;
-  const raw = dbUrl()
+  const configured = dbUrl().trim();
+  if (!configured) {
+    return path.join(sharedDataDir(), "bot_data.db");
+  }
+
+  const raw = configured
     .replace("sqlite+aiosqlite:///", "")
     .replace("sqlite:///", "");
-  const dataDir = sharedDataDir();
-  if (!raw || raw === "./bot_data.db" || raw === "bot_data.db") {
-    return path.join(dataDir, "bot_data.db");
+  if (!raw || raw === ".") {
+    return path.join(sharedDataDir(), "bot_data.db");
   }
-  if (path.isAbsolute(raw)) {
-    if (path.basename(raw) === "bot_data.db") {
-      return path.join(dataDir, "bot_data.db");
-    }
+  if (raw === ":memory:") {
     return raw;
   }
-  return path.resolve(dataDir, raw);
+  if (path.isAbsolute(raw)) {
+    return path.normalize(raw);
+  }
+  return path.resolve(getRootDir(), raw);
 }
 
 function sqliteColumns(table) {

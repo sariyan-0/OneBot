@@ -3,25 +3,46 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+const MAX_TELEGRAM_PHOTO_BYTES = 10 * 1024 * 1024;
+
 export default function BroadcastForm() {
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   async function onSubmit(event) {
     event.preventDefault();
+    const formEl = event.currentTarget;
     setError("");
+    setNotice("");
     setSubmitting(true);
 
     try {
-      const form = new FormData(event.currentTarget);
-      const res = await fetch("/api/broadcast/send", {
-        method: "POST",
-        headers: {
-          "X-ONEBOT-CLIENT": "1",
-        },
-        body: form,
-      });
+      const form = new FormData(formEl);
+      const image = form.get("image");
+      const hasImage = image && typeof image === "object" && "size" in image && image.size > 0;
+      if (hasImage && image.size > MAX_TELEGRAM_PHOTO_BYTES) {
+        throw new Error("Broadcast image is too large. Maximum size is 10 MB");
+      }
+
+      const message = String(form.get("message") || "").trim();
+      const res = hasImage
+        ? await fetch("/api/broadcast/send", {
+            method: "POST",
+            headers: {
+              "X-ONEBOT-CLIENT": "1",
+            },
+            body: form,
+          })
+        : await fetch("/api/broadcast/send", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-ONEBOT-CLIENT": "1",
+            },
+            body: JSON.stringify({ message }),
+          });
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) {
@@ -29,7 +50,8 @@ export default function BroadcastForm() {
       }
 
       router.refresh();
-      event.currentTarget.reset();
+      formEl.reset();
+      setNotice(`Broadcast complete: ${data.sent || 0} sent${data.failed ? `, ${data.failed} failed` : ""}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Broadcast failed");
     } finally {
@@ -51,6 +73,7 @@ export default function BroadcastForm() {
       </div>
 
       {error ? <div className="notice error">{error}</div> : null}
+      {notice ? <div className="notice success">{notice}</div> : null}
 
       <button type="submit" disabled={submitting}>
         {submitting ? "Sending..." : "Send broadcast"}

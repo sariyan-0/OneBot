@@ -94,19 +94,14 @@ export default function TicketThreadClient({ ticketId, owner, customerHref, cust
     setBusy(true);
     setError("");
     try {
-      const form = new FormData();
-      form.set("action", action);
-      for (const [key, value] of Object.entries(payload)) {
-        form.set(key, value);
-      }
-
       const res = await fetch(`/api/tickets/${ticketId}`, {
         method: "POST",
         headers: {
           Accept: "application/json",
+          "Content-Type": "application/json",
           "x-onebot-client": "ticket-thread",
         },
-        body: form,
+        body: JSON.stringify({ action, ...payload }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -174,11 +169,11 @@ export default function TicketThreadClient({ ticketId, owner, customerHref, cust
           </span>
           <div className="actions">
             {isClosed ? (
-              <button className="btn secondary" type="button" disabled={busy} onClick={() => postAction("reopen")}>
+              <button className="btn secondary" type="button" disabled={busy} onClick={() => postAction("reopen").catch((err) => setError(err.message || "Unable to reopen ticket"))}>
                 Reopen ticket
               </button>
             ) : (
-              <button className="btn danger" type="button" disabled={busy} onClick={() => postAction("close")}>
+              <button className="btn danger" type="button" disabled={busy} onClick={() => postAction("close").catch((err) => setError(err.message || "Unable to close ticket"))}>
                 Close ticket
               </button>
             )}
