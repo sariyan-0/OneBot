@@ -2456,8 +2456,8 @@ async def settings_get(request: web.Request) -> web.Response:
           <span class="badge bad">sensitive</span>
         </div>
         <div class="field-grid">
-          <div>{env_input("NOWPAYMENTS_API_KEY", "NOWPAYMENTS_API_KEY", "public key", secret=True)}</div>
-          <div>{env_input("NOWPAYMENTS_IPN_SECRET", "NOWPAYMENTS_IPN_SECRET", "private key", secret=True)}</div>
+          <div>{env_input("NOWPAYMENTS_API_KEY", "NOWPAYMENTS_API_KEY", "NOWPayments API key.", secret=True)}</div>
+          <div>{env_input("NOWPAYMENTS_IPN_SECRET", "NOWPAYMENTS_IPN_SECRET", "IPN signature secret.", secret=True)}</div>
           <div>{env_input("NOWPAYMENTS_IPN_URL", "NOWPAYMENTS_IPN_URL", "NOWPayments IPN callback URL.", placeholder=settings.nowpayments_ipn_callback_url())}</div>
           <div>{env_input("MAXELPAY_API_KEY", "MAXELPAY_API_KEY", "MaxelPay API key.", secret=True)}</div>
           <div>{env_input("MAXELPAY_WEBHOOK_SECRET", "MAXELPAY_WEBHOOK_SECRET", "MaxelPay webhook secret.", secret=True)}</div>

@@ -222,11 +222,11 @@ export default async function SettingsPage() {
           <form action="/api/settings" method="post" className="grid" style={{ gap: 14 }}>
             <div className="form-grid">
               <div>
-                <label>Public key</label>
-                <input name="NOWPAYMENTS_API_KEY" defaultValue={settings.NOWPAYMENTS_API_KEY || ""} placeholder="Public API key" />
+                <label>API key</label>
+                <input name="NOWPAYMENTS_API_KEY" defaultValue={settings.NOWPAYMENTS_API_KEY || ""} placeholder="NOWPayments API key" />
               </div>
               <div>
-                <label>Private key</label>
+                <label>IPN secret</label>
                 <input
                   name="NOWPAYMENTS_IPN_SECRET"
                   defaultValue={settings.NOWPAYMENTS_IPN_SECRET || ""}

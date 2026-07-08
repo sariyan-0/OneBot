@@ -121,6 +121,19 @@ class CryptoPaymentService:
         self._api_key = settings.nowpayments_api_key
         self._sandbox = not bool(self._api_key)
 
+    @staticmethod
+    def _http_error_message(prefix: str, exc: httpx.HTTPStatusError) -> str:
+        response = exc.response
+        detail = ""
+        try:
+            detail = response.text.strip()
+        except Exception:
+            detail = ""
+        if len(detail) > 500:
+            detail = detail[:500] + "..."
+        suffix = f" — response: {detail}" if detail else ""
+        return f"{prefix}: HTTP {response.status_code} {response.reason_phrase}{suffix}"
+
     # ── headers ──────────────────────────────
 
     @staticmethod
@@ -179,7 +192,7 @@ class CryptoPaymentService:
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.HTTPStatusError as exc:
-            raise PaymentAPIError(f"خطای HTTP از NOWPayments: {exc}") from exc
+            raise PaymentAPIError(self._http_error_message("خطای HTTP از NOWPayments", exc)) from exc
         except httpx.TransportError as exc:
             raise PaymentAPIError(f"خطای اتصال به NOWPayments: {exc}") from exc
 
@@ -254,7 +267,7 @@ class CryptoPaymentService:
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.HTTPStatusError as exc:
-            raise PaymentAPIError(f"خطای HTTP از NOWPayments Invoice: {exc}") from exc
+            raise PaymentAPIError(self._http_error_message("خطای HTTP از NOWPayments Invoice", exc)) from exc
         except httpx.TransportError as exc:
             raise PaymentAPIError(f"خطای اتصال به NOWPayments: {exc}") from exc
 
@@ -304,7 +317,7 @@ class CryptoPaymentService:
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 raise PaymentNotFoundError(f"پرداخت {payment_id} پیدا نشد") from exc
-            raise PaymentAPIError(f"خطای HTTP: {exc}") from exc
+            raise PaymentAPIError(self._http_error_message("خطای HTTP از NOWPayments status", exc)) from exc
         except httpx.TransportError as exc:
             raise PaymentAPIError(f"خطای اتصال: {exc}") from exc
 
