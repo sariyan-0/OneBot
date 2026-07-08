@@ -945,13 +945,19 @@ async def menu_profile(message: Message) -> None:
     await message.answer(text, parse_mode="HTML", reply_markup=markup)
 
 
-def _wallet_topup_keyboard():
+def _wallet_topup_keyboard(pm: dict):
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = InlineKeyboardBuilder()
-    kb.button(text="💠 کریپتو", callback_data="wallet_topup_crypto")
-    kb.button(text="💳 تومان / کارت", callback_data="wallet_topup_toman")
+    crypto_on = bool(pm.get("crypto"))
+    card_on = bool(pm.get("card"))
+    if crypto_on:
+        kb.button(text="💠 کریپتو", callback_data="wallet_topup_crypto")
+    if card_on:
+        kb.button(text="💳 تومان / کارت", callback_data="wallet_topup_toman")
+    if not crypto_on and not card_on:
+        kb.button(text="⛔ هیچ روش شارژی فعال نیست", callback_data="wallet_topup_disabled")
     kb.button(text="🔙 بازگشت به پروفایل", callback_data="profile_refresh")
-    kb.adjust(2, 1)
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -973,17 +979,36 @@ async def cb_profile_refresh(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "wallet_topup")
 async def cb_wallet_topup(callback: CallbackQuery) -> None:
     await callback.answer()
+    pm = await get_payment_status()
+    methods_text = "یک روش پرداخت را انتخاب کنید:" if (pm.get("crypto") or pm.get("card")) else "در حال حاضر هیچ روش شارژ کیف پولی فعال نیست."
     await _safe_edit(
         callback,
         "💼 <b>شارژ کیف پول</b>\n\n"
-        "یک روش پرداخت را انتخاب کنید:",
+        f"{methods_text}",
         parse_mode="HTML",
-        reply_markup=_wallet_topup_keyboard(),
+        reply_markup=_wallet_topup_keyboard(pm),
     )
+
+
+@router.callback_query(F.data == "wallet_topup_disabled")
+async def cb_wallet_topup_disabled(callback: CallbackQuery) -> None:
+    await callback.answer("در حال حاضر هیچ روش شارژ کیف پولی فعال نیست.", show_alert=True)
 
 
 @router.callback_query(F.data == "wallet_topup_crypto")
 async def cb_wallet_topup_crypto(callback: CallbackQuery, state: FSMContext) -> None:
+    pm = await get_payment_status()
+    if not pm.get("crypto"):
+        await state.clear()
+        await callback.answer("شارژ کیف پول با کریپتو غیرفعال است.", show_alert=True)
+        await _safe_edit(
+            callback,
+            "💼 <b>شارژ کیف پول</b>\n\n"
+            "شارژ با کریپتو در حال حاضر غیرفعال است.",
+            parse_mode="HTML",
+            reply_markup=_wallet_topup_keyboard(pm),
+        )
+        return
     await callback.answer()
     await state.set_state(WalletTopupStates.waiting_crypto_amount)
     await _safe_edit(
@@ -996,6 +1021,18 @@ async def cb_wallet_topup_crypto(callback: CallbackQuery, state: FSMContext) -> 
 
 @router.callback_query(F.data == "wallet_topup_toman")
 async def cb_wallet_topup_toman(callback: CallbackQuery, state: FSMContext) -> None:
+    pm = await get_payment_status()
+    if not pm.get("card"):
+        await state.clear()
+        await callback.answer("شارژ کیف پول با کارت غیرفعال است.", show_alert=True)
+        await _safe_edit(
+            callback,
+            "💼 <b>شارژ کیف پول</b>\n\n"
+            "شارژ تومانی/کارت در حال حاضر غیرفعال است.",
+            parse_mode="HTML",
+            reply_markup=_wallet_topup_keyboard(pm),
+        )
+        return
     await callback.answer()
     await state.set_state(WalletTopupStates.waiting_toman_amount)
     await _safe_edit(
@@ -1022,8 +1059,13 @@ async def msg_wallet_crypto_amount(message: Message, state: FSMContext) -> None:
         await message.answer("❌ حداقل شارژ $5 است.")
         return
 
-    await state.clear()
     pm = await get_payment_status()
+    if not pm.get("crypto"):
+        await state.clear()
+        await message.answer("⚠️ شارژ کیف پول با کریپتو در حال حاضر غیرفعال است.")
+        return
+
+    await state.clear()
     order_id = f"wallet_crypto_{tg_user.id}_{uuid.uuid4().hex[:8]}"
     async with AsyncSessionLocal() as session:
         db_user, _ = await get_or_create_user(
@@ -1148,7 +1190,7 @@ async def msg_wallet_crypto_amount(message: Message, state: FSMContext) -> None:
                     "QR را اسکن کنید یا آدرس را کپی کنید."
                 ),
                 parse_mode="HTML",
-                reply_markup=_wallet_topup_keyboard(),
+                reply_markup=_wallet_topup_keyboard(pm),
             )
     except (PaymentError, PaymentAPIError) as exc:
         logger.error(f"خطا در ساخت پرداخت کیف پول: {exc}")
@@ -1167,6 +1209,12 @@ async def msg_wallet_toman_amount(message: Message, state: FSMContext) -> None:
         return
     if amount_toman <= 0:
         await message.answer("❌ مبلغ باید بیشتر از صفر باشد.")
+        return
+
+    pm = await get_payment_status()
+    if not pm.get("card"):
+        await state.clear()
+        await message.answer("⚠️ شارژ کیف پول با کارت در حال حاضر غیرفعال است.")
         return
 
     card = await get_card_info()

@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     nowpayments_api_key: str = Field(default="", description="کلید API نوپیمنتس (خالی = sandbox)")
     nowpayments_ipn_secret: str = Field(default="", description="کلید مخفی برای تأیید IPN webhook")
     nowpayments_ipn_url: str = Field(default="", description="آدرس webhook برای دریافت تأیید پرداخت")
-    nowpayments_pay_currency: str = Field(default="usdttrc20", description="ارز پرداخت (پیش‌فرض USDT TRC-20)")
+    nowpayments_pay_currency: str = Field(default="usdttrc20", description="ارز پرداخت مستقیم NOWPayments (برای حالت invoice استفاده نمی‌شود)")
     invoice_expire_minutes: int = Field(default=30, description="مدت اعتبار invoice (دقیقه)")
 
     # ===== پرداخت کریپتو (MaxelPay) =====

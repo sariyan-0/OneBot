@@ -25,6 +25,9 @@ export default async function SettingsPage() {
   const settings = await getBackupsSettings();
   const panelUrl = settings.PANEL_URL || "";
   const hasToken = Boolean((settings.PANEL_API_TOKEN || "").trim());
+  const cryptoGateway = settings.crypto_gateway || "nowpayments";
+  const cryptoInvoiceMode = String(settings.payment_crypto_invoice || "0") === "1";
+  const showNowPaymentsDirectCurrency = cryptoGateway === "nowpayments" && !cryptoInvoiceMode;
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -213,7 +216,7 @@ export default async function SettingsPage() {
       <div className="two-col">
         <Section
           title="NOWPayments"
-          description="Configure the public and private keys, callback URL, and default currency."
+          description="Configure NOWPayments keys and callback URL. The fixed pay coin only applies to direct coin mode."
           icon={BadgeDollarSign}
         >
           <form action="/api/settings" method="post" className="grid" style={{ gap: 14 }}>
@@ -238,18 +241,30 @@ export default async function SettingsPage() {
                   placeholder="https://your-domain.com/webhook/nowpayments"
                 />
               </div>
-              <div>
-                <label>Default currency</label>
-                <select name="NOWPAYMENTS_PAY_CURRENCY" defaultValue={settings.NOWPAYMENTS_PAY_CURRENCY || "usdttrc20"}>
-                  <option value="usdttrc20">USDT TRC-20</option>
-                  <option value="usdtbep20">USDT BEP-20</option>
-                  <option value="usdterc20">USDT ERC-20</option>
-                  <option value="btc">BTC</option>
-                  <option value="eth">ETH</option>
-                  <option value="trx">TRX</option>
-                </select>
-              </div>
+              {showNowPaymentsDirectCurrency ? (
+                <div>
+                  <label>Direct pay coin</label>
+                  <select name="NOWPAYMENTS_PAY_CURRENCY" defaultValue={settings.NOWPAYMENTS_PAY_CURRENCY || "usdttrc20"}>
+                    <option value="usdttrc20">USDT TRC-20</option>
+                    <option value="usdtbep20">USDT BEP-20</option>
+                    <option value="usdterc20">USDT ERC-20</option>
+                    <option value="btc">BTC</option>
+                    <option value="eth">ETH</option>
+                    <option value="trx">TRX</option>
+                  </select>
+                </div>
+              ) : null}
             </div>
+            {!showNowPaymentsDirectCurrency ? (
+              <div className="notice" style={{ display: "grid", gap: 6 }}>
+                <strong>Direct pay coin is not used</strong>
+                <div className="muted">
+                  {cryptoGateway === "maxelpay"
+                    ? "MaxelPay is the selected crypto gateway, so NOWPayments coin settings are ignored."
+                    : "NOWPayments invoice mode lets the customer choose the payment currency on the hosted invoice page."}
+                </div>
+              </div>
+            ) : null}
             <button type="submit">Save NOWPayments</button>
           </form>
         </Section>
